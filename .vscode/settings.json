@@ -16,5 +16,5 @@
 	// Editor settings for consistent code style
 	"editor.formatOnSave": true,
 	"editor.detectIndentation": true,
-	"typescript.tsdk": "node_modules/typescript/lib"
+	"typescript.tsdk": "./node_modules/typescript/lib"
 }
