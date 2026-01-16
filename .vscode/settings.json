@@ -5,5 +5,18 @@
 	"git.branchProtectionPrompt": "alwaysCommitToNewBranch",
 	"git.branchRandomName.enable": true,
 	"githubPullRequests.assignCreated": "${user}",
-	"githubPullRequests.defaultMergeMethod": "squash"
+	"githubPullRequests.defaultMergeMethod": "squash",
+	// GitHub Copilot settings
+	"github.copilot.enable": {
+		"*": true,
+		"plaintext": false,
+		"markdown": true,
+		"typescript": true
+	},
+	// Editor settings for consistent code style
+	"editor.formatOnSave": true,
+	"editor.tabSize": 4,
+	"editor.insertSpaces": false,
+	"editor.detectIndentation": true,
+	"typescript.tsdk": "node_modules/typescript/lib"
 }
