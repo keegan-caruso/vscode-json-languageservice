@@ -15,8 +15,6 @@
 	},
 	// Editor settings for consistent code style
 	"editor.formatOnSave": true,
-	"editor.tabSize": 4,
-	"editor.insertSpaces": false,
 	"editor.detectIndentation": true,
 	"typescript.tsdk": "node_modules/typescript/lib"
 }
