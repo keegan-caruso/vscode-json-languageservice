@@ -63,3 +63,31 @@ Use `yarn test` to compile and run tests
   ![image](https://user-images.githubusercontent.com/6461412/94242925-061b3b00-ff17-11ea-8c17-8da15268f1a1.png)
 - set breakpoints, e.g. in `jsonCompletion.ts`
 - in the instance run from sources, invoke code completion in the `.json` file
+
+## GitHub Copilot
+
+This repository is configured for use with GitHub Copilot to enhance the development experience.
+
+### Getting Started with Copilot
+
+1. **Install Extensions**: When you open this repository in VS Code, you'll be prompted to install recommended extensions including:
+   - GitHub Copilot
+   - GitHub Copilot Chat
+
+2. **Repository Instructions**: Copilot has been configured with repository-specific guidelines in `.github/copilot-instructions.md` that help it understand:
+   - TypeScript coding standards and patterns used in this project
+   - Testing conventions with Mocha
+   - API design principles for the language service
+   - Project structure and key components
+
+3. **Onboarding Prompt**: New contributors can use the onboarding prompt at `.github/prompts/onboarding-plan.prompt.md` in Copilot Chat to generate a personalized learning plan based on their experience level.
+
+### Using Copilot Effectively
+
+- **Code Completion**: Copilot understands the codebase patterns and will suggest completions that follow project conventions
+- **Test Generation**: When writing tests, Copilot is aware of the Mocha TDD style and helper patterns used in this project
+- **Documentation**: Copilot can help generate JSDoc comments that match the style used throughout the codebase
+- **Refactoring**: Ask Copilot Chat for help refactoring code while maintaining backward compatibility
+
+For best results, reference the existing code patterns and let Copilot help you maintain consistency with the established codebase style.
+
