@@ -155,7 +155,6 @@ type: 'string'
 }
 };
 
-// deprecated keyword creates a deprecation warning
 const { textDoc, jsonDoc } = toDocument('{"oldField": "value"}');
 const errors = await ls.doValidation(textDoc, jsonDoc, {}, schema);
 assert.strictEqual(errors.length, 1, 'Deprecated fields should create a warning');
