@@ -213,13 +213,9 @@ export interface ISchemaCollector {
 
 export interface IEvaluationContext {
 	readonly schemaDraft: SchemaDraft;
-	schemaStack: JSONSchema[];
-	schemaRoots: JSONSchema[];
 }
 
 class EvaluationContext implements IEvaluationContext {
-	public schemaStack: JSONSchema[] = [];
-	public schemaRoots: JSONSchema[] = [];
 	constructor(public readonly schemaDraft: SchemaDraft) {
 	}
 }
@@ -384,8 +380,9 @@ export class JSONDocument {
 			const validationResult = new ValidationResult();
 			const context = new EvaluationContext(schemaDraft ?? getSchemaDraft(schema));
 			// Initialize with the root schema
-			context.schemaRoots.push(schema);
-			validate(this.root, schema, validationResult, NoOpSchemaCollector.instance, context);
+			const schemaStack: JSONSchema[] = [];
+			const schemaRoots: JSONSchema[] = [schema];
+			validate(this.root, schema, validationResult, NoOpSchemaCollector.instance, context, schemaStack, schemaRoots);
 			return validationResult.problems.map(p => {
 				const range = Range.create(textDocument.positionAt(p.location.offset), textDocument.positionAt(p.location.offset + p.location.length));
 				return Diagnostic.create(range, p.message, p.severity ?? severity, p.code);
@@ -400,8 +397,9 @@ export class JSONDocument {
 			const schemaDraft = getSchemaDraft(schema);
 			const context = new EvaluationContext(schemaDraft);
 			// Initialize with the root schema
-			context.schemaRoots.push(schema);
-			validate(this.root, schema, new ValidationResult(), matchingSchemas, context);
+			const schemaStack: JSONSchema[] = [];
+			const schemaRoots: JSONSchema[] = [schema];
+			validate(this.root, schema, new ValidationResult(), matchingSchemas, context, schemaStack, schemaRoots);
 			return matchingSchemas.schemas;
 		}
 		return [];
@@ -415,13 +413,13 @@ function getSchemaDraft(schema: JSONSchema, fallBack = SchemaDraft.v2020_12) {
 	return fallBack;
 }
 
-function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: ValidationResult, matchingSchemas: ISchemaCollector, context: IEvaluationContext): void {
+function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: ValidationResult, matchingSchemas: ISchemaCollector, context: IEvaluationContext, schemaStack: JSONSchema[], schemaRoots: JSONSchema[]): void {
 
 	if (!n || !matchingSchemas.include(n)) {
 		return;
 	}
 	if (n.type === 'property') {
-		return validate(n.valueNode, schema, validationResult, matchingSchemas, context);
+		return validate(n.valueNode, schema, validationResult, matchingSchemas, context, schemaStack, schemaRoots);
 	}
 	const node = n;
 
@@ -434,8 +432,8 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 		// This is the schema resource that contains the current $recursiveRef
 		let currentResourceRoot: JSONSchema | undefined;
 		let currentResourceRootHasAnchor = false;
-		for (let i = context.schemaStack.length - 1; i >= 0; i--) {
-			const stackSchema = context.schemaStack[i];
+		for (let i = schemaStack.length - 1; i >= 0; i--) {
+			const stackSchema = schemaStack[i];
 			if (stackSchema.$id || stackSchema.id || (<any>stackSchema)._originalId) {
 				currentResourceRoot = stackSchema;
 				// $recursiveAnchor is typed as string but can be boolean in actual JSON data
@@ -447,8 +445,8 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 		// If the current resource root has $recursiveAnchor: true, look for the first
 		// $recursiveAnchor: true in the stack (could be the current root or an outer one)
 		if (currentResourceRootHasAnchor) {
-			for (let i = 0; i < context.schemaStack.length; i++) {
-				const stackSchema = context.schemaStack[i];
+			for (let i = 0; i < schemaStack.length; i++) {
+				const stackSchema = schemaStack[i];
 				// $recursiveAnchor is typed as string but can be boolean in actual JSON data
 				if (stackSchema.$recursiveAnchor === 'true' || (stackSchema.$recursiveAnchor as any) === true) {
 					targetSchema = stackSchema;
@@ -464,25 +462,25 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 		}
 
 		// If still no target found, use the root schema
-		if (!targetSchema && context.schemaRoots.length > 0) {
-			targetSchema = context.schemaRoots[0];
+		if (!targetSchema && schemaRoots.length > 0) {
+			targetSchema = schemaRoots[0];
 		}
 
 		// Validate against the target schema (without the $recursiveRef to avoid infinite loop)
 		if (targetSchema && targetSchema !== schema) {
-			validate(node, targetSchema, validationResult, matchingSchemas, context);
+			validate(node, targetSchema, validationResult, matchingSchemas, context, schemaStack, schemaRoots);
 			return;
 		}
 	}
 
 	// Track schema document roots (schemas with $id or _originalId) if not already the root
-	const isNewRoot = (schema.$id || schema.id || (<any>schema)._originalId) && !context.schemaRoots.includes(schema);
+	const isNewRoot = (schema.$id || schema.id || (<any>schema)._originalId) && !schemaRoots.includes(schema);
 	if (isNewRoot) {
-		context.schemaRoots.push(schema);
+		schemaRoots.push(schema);
 	}
 
 	// Push current schema to stack for $recursiveRef resolution
-	context.schemaStack.push(schema);
+	schemaStack.push(schema);
 
 	_validateNode();
 
@@ -504,11 +502,11 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 	matchingSchemas.add({ node: node, schema: schema });
 
 	// Pop schema from stack when done
-	context.schemaStack.pop();
+	schemaStack.pop();
 
 	// Pop schema root if we pushed one
 	if (isNewRoot) {
-		context.schemaRoots.pop();
+		schemaRoots.pop();
 	}
 
 	function _validateNode() {
@@ -537,7 +535,7 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 			for (const subSchemaRef of schema.allOf) {
 				const subValidationResult = new ValidationResult();
 				const subMatchingSchemas = matchingSchemas.newSub();
-				validate(node, asSchema(subSchemaRef), subValidationResult, subMatchingSchemas, context);
+				validate(node, asSchema(subSchemaRef), subValidationResult, subMatchingSchemas, context, schemaStack, schemaRoots);
 				validationResult.merge(subValidationResult);
 				matchingSchemas.merge(subMatchingSchemas);
 			}
@@ -546,7 +544,7 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 		if (notSchema) {
 			const subValidationResult = new ValidationResult();
 			const subMatchingSchemas = matchingSchemas.newSub();
-			validate(node, notSchema, subValidationResult, subMatchingSchemas, context);
+			validate(node, notSchema, subValidationResult, subMatchingSchemas, context, schemaStack, schemaRoots);
 			if (!subValidationResult.hasProblems()) {
 				validationResult.problems.push({
 					location: { offset: node.offset, length: node.length },
@@ -570,7 +568,7 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 				const subSchema = asSchema(subSchemaRef);
 				const subValidationResult = new ValidationResult();
 				const subMatchingSchemas = matchingSchemas.newSub();
-				validate(node, subSchema, subValidationResult, subMatchingSchemas, context);
+				validate(node, subSchema, subValidationResult, subMatchingSchemas, context, schemaStack, schemaRoots);
 				if (!subValidationResult.hasProblems()) {
 					matches.push(subSchema);
 				}
@@ -621,7 +619,7 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 			const subValidationResult = new ValidationResult();
 			const subMatchingSchemas = matchingSchemas.newSub();
 
-			validate(node, asSchema(schema), subValidationResult, subMatchingSchemas, context);
+			validate(node, asSchema(schema), subValidationResult, subMatchingSchemas, context, schemaStack, schemaRoots);
 
 			validationResult.merge(subValidationResult);
 			matchingSchemas.merge(subMatchingSchemas);
@@ -632,7 +630,7 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 			const subValidationResult = new ValidationResult();
 			const subMatchingSchemas = matchingSchemas.newSub();
 
-			validate(node, subSchema, subValidationResult, subMatchingSchemas, context);
+			validate(node, subSchema, subValidationResult, subMatchingSchemas, context, schemaStack, schemaRoots);
 			matchingSchemas.merge(subMatchingSchemas);
 
 			if (!subValidationResult.hasProblems()) {
@@ -939,7 +937,7 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 				const itemValidationResult = new ValidationResult();
 				const item = node.items[index];
 				if (item) {
-					validate(item, subSchema, itemValidationResult, matchingSchemas, context);
+					validate(item, subSchema, itemValidationResult, matchingSchemas, context, schemaStack, schemaRoots);
 					validationResult.mergePropertyMatch(itemValidationResult);
 				}
 				validationResult.processedProperties.add(String(index));
@@ -960,7 +958,7 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 			} else {
 				for (; index < node.items.length; index++) {
 					const itemValidationResult = new ValidationResult();
-					validate(node.items[index], additionalItemSchema, itemValidationResult, matchingSchemas, context);
+					validate(node.items[index], additionalItemSchema, itemValidationResult, matchingSchemas, context, schemaStack, schemaRoots);
 					validationResult.mergePropertyMatch(itemValidationResult);
 					validationResult.processedProperties.add(String(index));
 				}
@@ -973,7 +971,7 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 			for (let index = 0; index < node.items.length; index++) {
 				const item = node.items[index];
 				const itemValidationResult = new ValidationResult();
-				validate(item, containsSchema, itemValidationResult, NoOpSchemaCollector.instance, context);
+				validate(item, containsSchema, itemValidationResult, NoOpSchemaCollector.instance, context, schemaStack, schemaRoots);
 				if (!itemValidationResult.hasProblems()) {
 					containsCount++;
 					if (context.schemaDraft >= SchemaDraft.v2020_12) {
@@ -1012,7 +1010,7 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 						});
 					} else {
 						const itemValidationResult = new ValidationResult();
-						validate(node.items[i], <any>schema.unevaluatedItems, itemValidationResult, matchingSchemas, context);
+						validate(node.items[i], <any>schema.unevaluatedItems, itemValidationResult, matchingSchemas, context, schemaStack, schemaRoots);
 						validationResult.mergePropertyMatch(itemValidationResult);
 					}
 				}
@@ -1104,7 +1102,7 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 						}
 					} else {
 						const propertyValidationResult = new ValidationResult();
-						validate(child, propertySchema, propertyValidationResult, matchingSchemas, context);
+						validate(child, propertySchema, propertyValidationResult, matchingSchemas, context, schemaStack, schemaRoots);
 						validationResult.mergePropertyMatch(propertyValidationResult);
 					}
 				}
@@ -1144,7 +1142,7 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 									}
 								} else {
 									const propertyValidationResult = new ValidationResult();
-									validate(child, propertySchema, propertyValidationResult, matchingSchemas, context);
+									validate(child, propertySchema, propertyValidationResult, matchingSchemas, context, schemaStack, schemaRoots);
 									validationResult.mergePropertyMatch(propertyValidationResult);
 								}
 							}
@@ -1172,7 +1170,7 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 						});
 					} else if (additionalProperties !== true) {
 						const propertyValidationResult = new ValidationResult();
-						validate(child, additionalProperties, propertyValidationResult, matchingSchemas, context);
+						validate(child, additionalProperties, propertyValidationResult, matchingSchemas, context, schemaStack, schemaRoots);
 						validationResult.mergePropertyMatch(propertyValidationResult);
 					}
 				}
@@ -1214,7 +1212,7 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 							});
 						} else if (unevaluatedProperties !== true) {
 							const propertyValidationResult = new ValidationResult();
-							validate(child, unevaluatedProperties, propertyValidationResult, matchingSchemas, context);
+							validate(child, unevaluatedProperties, propertyValidationResult, matchingSchemas, context, schemaStack, schemaRoots);
 							validationResult.mergePropertyMatch(propertyValidationResult);
 						}
 					}
@@ -1255,7 +1253,7 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 			for (const f of node.properties) {
 				const key = f.keyNode;
 				if (key) {
-					validate(key, propertyNames, validationResult, matchingSchemas, context);
+					validate(key, propertyNames, validationResult, matchingSchemas, context, schemaStack, schemaRoots);
 				}
 			}
 		}
@@ -1276,7 +1274,7 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 				const propertySchema = asSchema(propertyDep);
 				if (propertySchema) {
 					const propertyValidationResult = new ValidationResult();
-					validate(node, propertySchema, propertyValidationResult, matchingSchemas, context);
+					validate(node, propertySchema, propertyValidationResult, matchingSchemas, context, schemaStack, schemaRoots);
 					validationResult.mergePropertyMatch(propertyValidationResult);
 					validationResult.mergeProcessedProperties(propertyValidationResult);
 				}
