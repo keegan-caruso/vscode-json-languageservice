@@ -424,12 +424,12 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 		return validate(n.valueNode, schema, validationResult, matchingSchemas, context);
 	}
 	const node = n;
-	
+
 	// Handle $recursiveRef
 	if (schema.$recursiveRef) {
 		// Find the appropriate schema to use based on $recursiveAnchor in the schema stack
 		let targetSchema: JSONSchema | undefined;
-		
+
 		// Find the nearest schema resource root (schema with $id/_originalId)
 		// This is the schema resource that contains the current $recursiveRef
 		let currentResourceRoot: JSONSchema | undefined;
@@ -443,7 +443,7 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 				break;
 			}
 		}
-		
+
 		// If the current resource root has $recursiveAnchor: true, look for the first
 		// $recursiveAnchor: true in the stack (could be the current root or an outer one)
 		if (currentResourceRootHasAnchor) {
@@ -456,34 +456,34 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 				}
 			}
 		}
-		
+
 		// If no $recursiveAnchor: true found, or current resource doesn't have anchor,
 		// use the current schema resource root
 		if (!targetSchema) {
 			targetSchema = currentResourceRoot;
 		}
-		
+
 		// If still no target found, use the root schema
 		if (!targetSchema && context.schemaRoots.length > 0) {
 			targetSchema = context.schemaRoots[0];
 		}
-		
+
 		// Validate against the target schema (without the $recursiveRef to avoid infinite loop)
 		if (targetSchema && targetSchema !== schema) {
 			validate(node, targetSchema, validationResult, matchingSchemas, context);
 			return;
 		}
 	}
-	
+
 	// Track schema document roots (schemas with $id or _originalId) if not already the root
 	const isNewRoot = (schema.$id || schema.id || (<any>schema)._originalId) && !context.schemaRoots.includes(schema);
 	if (isNewRoot) {
 		context.schemaRoots.push(schema);
 	}
-	
+
 	// Push current schema to stack for $recursiveRef resolution
 	context.schemaStack.push(schema);
-	
+
 	_validateNode();
 
 	switch (node.type) {
@@ -502,10 +502,10 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 	}
 
 	matchingSchemas.add({ node: node, schema: schema });
-	
+
 	// Pop schema from stack when done
 	context.schemaStack.pop();
-	
+
 	// Pop schema root if we pushed one
 	if (isNewRoot) {
 		context.schemaRoots.pop();
@@ -634,13 +634,15 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 
 			validate(node, subSchema, subValidationResult, subMatchingSchemas, context);
 			matchingSchemas.merge(subMatchingSchemas);
-			validationResult.mergeProcessedProperties(subValidationResult);
 
 			if (!subValidationResult.hasProblems()) {
+				// if passed: merge properties from if
+				validationResult.mergeProcessedProperties(subValidationResult);
 				if (thenSchema) {
 					testBranch(thenSchema);
 				}
 			} else if (elseSchema) {
+				// if failed: don't merge properties from if, only from else
 				testBranch(elseSchema);
 			}
 		};
@@ -1176,6 +1178,25 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 				}
 			}
 		}
+		if (schema.dependentRequired) {
+			for (const key in schema.dependentRequired) {
+				const prop = seenKeys[key];
+				const propertyDeps = schema.dependentRequired[key];
+				if (prop && Array.isArray(propertyDeps)) {
+					_validatePropertyDependencies(key, propertyDeps);
+				}
+			}
+		}
+		if (schema.dependentSchemas) {
+			for (const key in schema.dependentSchemas) {
+				const prop = seenKeys[key];
+				const propertyDeps = schema.dependentSchemas[key];
+				if (prop) {
+					_validatePropertyDependencies(key, propertyDeps);
+				}
+			}
+		}
+
 		const unevaluatedProperties = schema.unevaluatedProperties;
 		if (unevaluatedProperties !== undefined) {
 			const processed = [];
@@ -1220,25 +1241,6 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 			}
 		}
 
-		if (schema.dependentRequired) {
-			for (const key in schema.dependentRequired) {
-				const prop = seenKeys[key];
-				const propertyDeps = schema.dependentRequired[key];
-				if (prop && Array.isArray(propertyDeps)) {
-					_validatePropertyDependencies(key, propertyDeps);
-				}
-			}
-		}
-		if (schema.dependentSchemas) {
-			for (const key in schema.dependentSchemas) {
-				const prop = seenKeys[key];
-				const propertyDeps = schema.dependentSchemas[key];
-				if (prop && isObject(propertyDeps)) {
-					_validatePropertyDependencies(key, propertyDeps);
-				}
-			}
-		}
-
 		if (schema.dependencies) {
 			for (const key in schema.dependencies) {
 				const prop = seenKeys[key];
@@ -1276,6 +1278,7 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 					const propertyValidationResult = new ValidationResult();
 					validate(node, propertySchema, propertyValidationResult, matchingSchemas, context);
 					validationResult.mergePropertyMatch(propertyValidationResult);
+					validationResult.mergeProcessedProperties(propertyValidationResult);
 				}
 			}
 		}

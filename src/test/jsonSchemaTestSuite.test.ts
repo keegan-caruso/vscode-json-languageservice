@@ -145,11 +145,6 @@ const skippedTests = new Set([
 	"draft7/refRemote.json/Location-independent identifier in remote ref/integer is valid",
 
 	// === draft2019-09 - Actual failures ===
-	"draft2019-09/dependentSchemas.json/boolean subschemas/object with property having schema false is invalid",
-	"draft2019-09/dependentSchemas.json/boolean subschemas/object with both properties is invalid",
-	"draft2019-09/unevaluatedProperties.json/unevaluatedProperties with if/then/else/when if is false and has unevaluated properties",
-	"draft2019-09/unevaluatedProperties.json/unevaluatedProperties with if/then/else, then not defined/when if is false and has unevaluated properties",
-	"draft2019-09/unevaluatedProperties.json/unevaluatedProperties with dependentSchemas/with no unevaluated properties",
 	"draft2019-09/vocabulary.json/schema that uses custom metaschema with with no validation vocabulary/no validation: invalid number, but it still validates",
 	// === draft2019-09 - Remote refs (require network) ===
 	"draft2019-09/refRemote.json/remote ref/remote ref valid",
@@ -164,11 +159,6 @@ const skippedTests = new Set([
 	"draft2019-09/refRemote.json/Location-independent identifier in remote ref/integer is valid",
 
 	// === draft2020-12 - Actual failures ===
-	"draft2020-12/dependentSchemas.json/boolean subschemas/object with property having schema false is invalid",
-	"draft2020-12/dependentSchemas.json/boolean subschemas/object with both properties is invalid",
-	"draft2020-12/unevaluatedProperties.json/unevaluatedProperties with if/then/else/when if is false and has unevaluated properties",
-	"draft2020-12/unevaluatedProperties.json/unevaluatedProperties with if/then/else, then not defined/when if is false and has unevaluated properties",
-	"draft2020-12/unevaluatedProperties.json/unevaluatedProperties with dependentSchemas/with no unevaluated properties",
 	"draft2020-12/vocabulary.json/schema that uses custom metaschema with with no validation vocabulary/no validation: invalid number, but it still validates",
 	// === draft2020-12 - $dynamicRef (not implemented) ===
 	"draft2020-12/dynamicRef.json/A $dynamicRef to a $dynamicAnchor in the same schema resource should behave like a normal $ref to an $anchor/An array of strings is valid",
