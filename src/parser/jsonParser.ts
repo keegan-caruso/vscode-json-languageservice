@@ -425,48 +425,19 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 
 	// Handle $recursiveRef
 	if (schema.$recursiveRef) {
-		// Find the appropriate schema to use based on $recursiveAnchor in the schema stack
-		let targetSchema: JSONSchema | undefined;
+		const hasRecursiveAnchor = (s: JSONSchema) => s.$recursiveAnchor === 'true' || (s.$recursiveAnchor as any) === true;
+		const isSchemaRoot = (s: JSONSchema) => s.$id || s.id || (<any>s)._originalId;
 
-		// Find the nearest schema resource root (schema with $id/_originalId)
-		// This is the schema resource that contains the current $recursiveRef
-		let currentResourceRoot: JSONSchema | undefined;
-		let currentResourceRootHasAnchor = false;
-		for (let i = schemaStack.length - 1; i >= 0; i--) {
-			const stackSchema = schemaStack[i];
-			if (stackSchema.$id || stackSchema.id || (<any>stackSchema)._originalId) {
-				currentResourceRoot = stackSchema;
-				// $recursiveAnchor is typed as string but can be boolean in actual JSON data
-				currentResourceRootHasAnchor = stackSchema.$recursiveAnchor === 'true' || (stackSchema.$recursiveAnchor as any) === true;
-				break;
-			}
-		}
+		// Find nearest schema resource root (working backwards from current position)
+		const currentResourceRoot = schemaStack.slice().reverse().find(isSchemaRoot);
 
-		// If the current resource root has $recursiveAnchor: true, look for the first
-		// $recursiveAnchor: true in the stack (could be the current root or an outer one)
-		if (currentResourceRootHasAnchor) {
-			for (let i = 0; i < schemaStack.length; i++) {
-				const stackSchema = schemaStack[i];
-				// $recursiveAnchor is typed as string but can be boolean in actual JSON data
-				if (stackSchema.$recursiveAnchor === 'true' || (stackSchema.$recursiveAnchor as any) === true) {
-					targetSchema = stackSchema;
-					break;
-				}
-			}
-		}
+		// If current resource has $recursiveAnchor: true, find first $recursiveAnchor: true in stack
+		// Otherwise use current resource root, or fall back to document root
+		const targetSchema = (currentResourceRoot && hasRecursiveAnchor(currentResourceRoot))
+			? schemaStack.find(hasRecursiveAnchor)
+			: currentResourceRoot ?? schemaRoots[0];
 
-		// If no $recursiveAnchor: true found, or current resource doesn't have anchor,
-		// use the current schema resource root
-		if (!targetSchema) {
-			targetSchema = currentResourceRoot;
-		}
-
-		// If still no target found, use the root schema
-		if (!targetSchema && schemaRoots.length > 0) {
-			targetSchema = schemaRoots[0];
-		}
-
-		// Validate against the target schema (without the $recursiveRef to avoid infinite loop)
+		// Validate against the target schema (avoiding infinite loop)
 		if (targetSchema && targetSchema !== schema) {
 			validate(node, targetSchema, validationResult, matchingSchemas, context, schemaStack, schemaRoots);
 			return;
