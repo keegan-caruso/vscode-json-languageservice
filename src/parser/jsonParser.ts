@@ -213,9 +213,13 @@ export interface ISchemaCollector {
 
 export interface IEvaluationContext {
 	readonly schemaDraft: SchemaDraft;
+	schemaStack: JSONSchema[];
+	schemaRoots: JSONSchema[];
 }
 
 class EvaluationContext implements IEvaluationContext {
+	public schemaStack: JSONSchema[] = [];
+	public schemaRoots: JSONSchema[] = [];
 	constructor(public readonly schemaDraft: SchemaDraft) {
 	}
 }
@@ -378,7 +382,10 @@ export class JSONDocument {
 	public validate(textDocument: TextDocument, schema: JSONSchema | undefined, severity: DiagnosticSeverity = DiagnosticSeverity.Warning, schemaDraft?: SchemaDraft): Diagnostic[] | undefined {
 		if (this.root && schema) {
 			const validationResult = new ValidationResult();
-			validate(this.root, schema, validationResult, NoOpSchemaCollector.instance, new EvaluationContext(schemaDraft ?? getSchemaDraft(schema)));
+			const context = new EvaluationContext(schemaDraft ?? getSchemaDraft(schema));
+			// Initialize with the root schema
+			context.schemaRoots.push(schema);
+			validate(this.root, schema, validationResult, NoOpSchemaCollector.instance, context);
 			return validationResult.problems.map(p => {
 				const range = Range.create(textDocument.positionAt(p.location.offset), textDocument.positionAt(p.location.offset + p.location.length));
 				return Diagnostic.create(range, p.message, p.severity ?? severity, p.code);
@@ -392,6 +399,8 @@ export class JSONDocument {
 			const matchingSchemas = new SchemaCollector(focusOffset, exclude);
 			const schemaDraft = getSchemaDraft(schema);
 			const context = new EvaluationContext(schemaDraft);
+			// Initialize with the root schema
+			context.schemaRoots.push(schema);
 			validate(this.root, schema, new ValidationResult(), matchingSchemas, context);
 			return matchingSchemas.schemas;
 		}
@@ -415,6 +424,66 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 		return validate(n.valueNode, schema, validationResult, matchingSchemas, context);
 	}
 	const node = n;
+	
+	// Handle $recursiveRef
+	if (schema.$recursiveRef) {
+		// Find the appropriate schema to use based on $recursiveAnchor in the schema stack
+		let targetSchema: JSONSchema | undefined;
+		
+		// Find the nearest schema resource root (schema with $id/_originalId)
+		// This is the schema resource that contains the current $recursiveRef
+		let currentResourceRoot: JSONSchema | undefined;
+		let currentResourceRootHasAnchor = false;
+		for (let i = context.schemaStack.length - 1; i >= 0; i--) {
+			const stackSchema = context.schemaStack[i];
+			if (stackSchema.$id || stackSchema.id || (<any>stackSchema)._originalId) {
+				currentResourceRoot = stackSchema;
+				// $recursiveAnchor is typed as string but can be boolean in actual JSON data
+				currentResourceRootHasAnchor = stackSchema.$recursiveAnchor === 'true' || (stackSchema.$recursiveAnchor as any) === true;
+				break;
+			}
+		}
+		
+		// If the current resource root has $recursiveAnchor: true, look for the first
+		// $recursiveAnchor: true in the stack (could be the current root or an outer one)
+		if (currentResourceRootHasAnchor) {
+			for (let i = 0; i < context.schemaStack.length; i++) {
+				const stackSchema = context.schemaStack[i];
+				// $recursiveAnchor is typed as string but can be boolean in actual JSON data
+				if (stackSchema.$recursiveAnchor === 'true' || (stackSchema.$recursiveAnchor as any) === true) {
+					targetSchema = stackSchema;
+					break;
+				}
+			}
+		}
+		
+		// If no $recursiveAnchor: true found, or current resource doesn't have anchor,
+		// use the current schema resource root
+		if (!targetSchema) {
+			targetSchema = currentResourceRoot;
+		}
+		
+		// If still no target found, use the root schema
+		if (!targetSchema && context.schemaRoots.length > 0) {
+			targetSchema = context.schemaRoots[0];
+		}
+		
+		// Validate against the target schema (without the $recursiveRef to avoid infinite loop)
+		if (targetSchema && targetSchema !== schema) {
+			validate(node, targetSchema, validationResult, matchingSchemas, context);
+			return;
+		}
+	}
+	
+	// Track schema document roots (schemas with $id or _originalId) if not already the root
+	const isNewRoot = (schema.$id || schema.id || (<any>schema)._originalId) && !context.schemaRoots.includes(schema);
+	if (isNewRoot) {
+		context.schemaRoots.push(schema);
+	}
+	
+	// Push current schema to stack for $recursiveRef resolution
+	context.schemaStack.push(schema);
+	
 	_validateNode();
 
 	switch (node.type) {
@@ -433,6 +502,14 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 	}
 
 	matchingSchemas.add({ node: node, schema: schema });
+	
+	// Pop schema from stack when done
+	context.schemaStack.pop();
+	
+	// Pop schema root if we pushed one
+	if (isNewRoot) {
+		context.schemaRoots.pop();
+	}
 
 	function _validateNode() {
 

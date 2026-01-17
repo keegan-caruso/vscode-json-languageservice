@@ -486,6 +486,10 @@ export class JSONSchemaService implements IJSONSchemaService {
 					(<any>target)[key] = section[key];
 				}
 			}
+			// Preserve $id as a hidden property for $recursiveRef resolution
+			if (section.$id || section.id) {
+				(<any>target)._originalId = section.$id || section.id;
+			}
 		};
 
 		const mergeRef = (target: JSONSchema, sourceRoot: JSONSchema, sourceHandle: SchemaHandle, refSegment: string | undefined): void => {
@@ -548,9 +552,8 @@ export class JSONSchemaService implements IJSONSchemaService {
 						}
 					}
 				}
-				if (next.$recursiveRef) {
-					usesUnsupportedFeatures.add('$recursiveRef');
-				}
+				// $recursiveRef is handled during validation, not during schema resolution
+				// Don't mark it as unsupported anymore
 				if (next.$dynamicRef) {
 					usesUnsupportedFeatures.add('$dynamicRef');
 				}
@@ -571,9 +574,7 @@ export class JSONSchemaService implements IJSONSchemaService {
 						result.set(anchor, next);
 					}
 				}
-				if (next.$recursiveAnchor) {
-					usesUnsupportedFeatures.add('$recursiveAnchor');
-				}
+				// $recursiveAnchor is now supported - no need to add to unsupported features
 				if (next.$dynamicAnchor) {
 					usesUnsupportedFeatures.add('$dynamicAnchor');
 				}
