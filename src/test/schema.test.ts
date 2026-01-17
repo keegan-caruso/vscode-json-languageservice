@@ -1081,8 +1081,8 @@ suite('JSON Schema', () => {
 		resolvedSchema = await service.getSchemaForResource('main.bar');
 		const message = "Unable to load schema from 'http://myschemastore/myschemafoo': Resource not found.";
 		assert.deepStrictEqual(resolvedSchema?.errors, [
-			{ 
-				message: message, 
+			{
+				message: message,
 				code: ErrorCode.SchemaResolveError,
 				relatedInformation: [{ location: { uri: 'http://myschemastore/myschemafoo', range: Range.create(0, 0, 0, 0) }, message: message }]
 			}]);
@@ -2106,5 +2106,90 @@ suite('JSON Schema', () => {
 			const resolveError = await ls.doValidation(textDoc, jsonDoc, { schemaRequest: 'error' });
 			assert.deepStrictEqual(resolveError, []);
 		}
+	});
+
+	test('schema with $vocabulary shows unsupported feature warning', async function () {
+		const schema: JSONSchema = {
+			$schema: 'https://json-schema.org/draft/2020-12/schema',
+			$vocabulary: {
+				'https://json-schema.org/draft/2020-12/vocab/core': true,
+				'https://json-schema.org/draft/2020-12/vocab/applicator': true
+			},
+			type: 'object'
+		};
+
+		const ls = getLanguageService({});
+
+		const { textDoc, jsonDoc } = toDocument(JSON.stringify({ name: 'test' }));
+		const validation = await ls.doValidation(textDoc, jsonDoc, { schemaValidation: 'warning' }, schema);
+
+		assert.strictEqual(validation.length, 1);
+		assert.ok(validation[0].message.includes('$vocabulary'));
+		assert.ok(validation[0].message.includes('not yet supported'));
+		assert.strictEqual(validation[0].severity, DiagnosticSeverity.Warning);
+		assert.strictEqual(validation[0].code, ErrorCode.SchemaUnsupportedFeature);
+	});
+
+	test('schema with $dynamicAnchor shows unsupported feature warning', async function () {
+		const schema: JSONSchema = {
+			$schema: 'https://json-schema.org/draft/2020-12/schema',
+			$dynamicAnchor: 'items',
+			type: 'object'
+		};
+
+		const ls = getLanguageService({});
+
+		const { textDoc, jsonDoc } = toDocument(JSON.stringify({ name: 'test' }));
+		const validation = await ls.doValidation(textDoc, jsonDoc, { schemaValidation: 'warning' }, schema);
+
+		assert.strictEqual(validation.length, 1);
+		assert.ok(validation[0].message.includes('$dynamicAnchor'));
+		assert.ok(validation[0].message.includes('not yet supported'));
+		assert.strictEqual(validation[0].severity, DiagnosticSeverity.Warning);
+		assert.strictEqual(validation[0].code, ErrorCode.SchemaUnsupportedFeature);
+	});
+
+	test('schema with $dynamicRef shows unsupported feature warning', async function () {
+		const schema: JSONSchema = {
+			$schema: 'https://json-schema.org/draft/2020-12/schema',
+			$dynamicRef: '#items',
+			type: 'object'
+		};
+
+		const ls = getLanguageService({});
+
+		const { textDoc, jsonDoc } = toDocument(JSON.stringify({ name: 'test' }));
+		const validation = await ls.doValidation(textDoc, jsonDoc, { schemaValidation: 'warning' }, schema);
+
+		assert.strictEqual(validation.length, 1);
+		assert.ok(validation[0].message.includes('$dynamicRef'));
+		assert.ok(validation[0].message.includes('not yet supported'));
+		assert.strictEqual(validation[0].severity, DiagnosticSeverity.Warning);
+		assert.strictEqual(validation[0].code, ErrorCode.SchemaUnsupportedFeature);
+	});
+
+	test('schema with multiple unsupported features shows warning with all features', async function () {
+		const schema: JSONSchema = {
+			$schema: 'https://json-schema.org/draft/2020-12/schema',
+			$vocabulary: {
+				'https://json-schema.org/draft/2020-12/vocab/core': true
+			},
+			$dynamicAnchor: 'items',
+			$dynamicRef: '#items',
+			type: 'object'
+		};
+
+		const ls = getLanguageService({});
+
+		const { textDoc, jsonDoc } = toDocument(JSON.stringify({ name: 'test' }));
+		const validation = await ls.doValidation(textDoc, jsonDoc, { schemaValidation: 'warning' }, schema);
+
+		assert.strictEqual(validation.length, 1);
+		assert.ok(validation[0].message.includes('$dynamicRef'));
+		assert.ok(validation[0].message.includes('$dynamicAnchor'));
+		assert.ok(validation[0].message.includes('$vocabulary'));
+		assert.ok(validation[0].message.includes('not yet supported'));
+		assert.strictEqual(validation[0].severity, DiagnosticSeverity.Warning);
+		assert.strictEqual(validation[0].code, ErrorCode.SchemaUnsupportedFeature);
 	});
 });

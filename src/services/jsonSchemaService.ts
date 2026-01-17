@@ -675,6 +675,12 @@ export class JSONSchemaService implements IJSONSchemaService {
 				if (schema.$dynamicRef) {
 					usesUnsupportedFeatures.add('$dynamicRef');
 				}
+				if (schema.$vocabulary) {
+					usesUnsupportedFeatures.add('$vocabulary');
+				}
+				if (schema.$dynamicAnchor) {
+					usesUnsupportedFeatures.add('$dynamicAnchor');
+				}
 
 				// Continue traversing child schemas with the (potentially updated) base
 				JSONSchemaService.traverseSchemaProperties(schema, (childSchema) => {
@@ -718,13 +724,6 @@ export class JSONSchemaService implements IJSONSchemaService {
 			};
 
 			traverseForAnchors(root, true);
-
-			// Handle $recursiveAnchor and $dynamicAnchor warnings
-			this.traverseNodes(root, next => {
-				if (next.$dynamicAnchor) {
-					usesUnsupportedFeatures.add('$dynamicAnchor');
-				}
-			});
 
 			return result;
 		};
