@@ -1111,13 +1111,21 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 		}
 
 		if (schema.patternProperties) {
+			// Collect all properties matched by any pattern first
+			// A property must be validated against ALL patterns it matches (not just the first)
+			// Properties in `properties` can also match `patternProperties`, so check all keys
+			const allPropertyNames = Object.keys(seenKeys);
+			const patternPropertyMatches = new Set<string>();
 			for (const propertyPattern of Object.keys(schema.patternProperties)) {
 				const regex = extendedRegExp(propertyPattern);
 				if (regex) {
-					const processed = [];
-					for (const propertyName of unprocessedProperties) {
+					for (const propertyName of allPropertyNames) {
 						if (regex.test(propertyName)) {
-							processed.push(propertyName);
+							// Only mark as pattern match if not already in `properties`
+							// (for additionalProperties tracking)
+							if (unprocessedProperties.has(propertyName)) {
+								patternPropertyMatches.add(propertyName);
+							}
 							const child = seenKeys[propertyName];
 							if (child) {
 								const propertySchema = schema.patternProperties[propertyPattern];
@@ -1140,9 +1148,10 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 							}
 						}
 					}
-					processed.forEach(propertyProcessed);
 				}
 			}
+			// Mark all matched properties as processed after all patterns have been checked
+			patternPropertyMatches.forEach(propertyProcessed);
 		}
 
 

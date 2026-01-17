@@ -77,7 +77,7 @@ export class JSONValidation {
 					}
 					const semanticErrors = jsonDocument.validate(textDocument, schema.schema, schemaValidation, documentSettings?.schemaDraft);
 					if (semanticErrors) {
-						semanticErrors.forEach(addProblem); 
+						semanticErrors.forEach(addProblem);
 					}
 				}
 				if (schemaAllowsComments(schema.schema)) {
@@ -109,7 +109,7 @@ export class JSONValidation {
 		};
 
 		if (schema) {
-			const uri = schema.id || ('schemaservice://untitled/' + idCounter++);
+			const uri = schema.$id || schema.id || ('schemaservice://untitled/' + idCounter++);
 			const handle = this.jsonSchemaService.registerExternalSchema({ uri, schema });
 			return handle.getResolvedSchema().then(resolvedSchema => {
 				return getDiagnostics(resolvedSchema);
