@@ -483,7 +483,15 @@ export class JSONSchemaService implements IJSONSchemaService {
 		const merge = (target: JSONSchema, section: any): void => {
 			for (const key in section) {
 				if (section.hasOwnProperty(key) && key !== 'id' && key !== '$id') {
-					(<any>target)[key] = section[key];
+					// Deep merge for properties and patternProperties to combine them
+					if ((key === 'properties' || key === 'patternProperties') &&
+						typeof section[key] === 'object' && section[key] !== null &&
+						typeof (<any>target)[key] === 'object' && (<any>target)[key] !== null) {
+						// Merge the properties/patternProperties objects
+						(<any>target)[key] = { ...(<any>target)[key], ...section[key] };
+					} else {
+						(<any>target)[key] = section[key];
+					}
 				}
 			}
 			// Preserve $id as a non-enumerable hidden property for $recursiveRef resolution
