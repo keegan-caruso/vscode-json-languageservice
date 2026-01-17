@@ -8,7 +8,7 @@ import { JSONSchema, JSONSchemaMap, JSONSchemaRef } from '../jsonSchema';
 import { URI } from 'vscode-uri';
 import * as Strings from '../utils/strings';
 import { asSchema, getSchemaDraftFromId, JSONDocument, normalizeId } from '../parser/jsonParser';
-import { SchemaRequestService, WorkspaceContextService, PromiseConstructor, MatchingSchema, TextDocument, SchemaConfiguration, SchemaDraft, ErrorCode } from '../jsonLanguageTypes';
+import { SchemaRequestService, WorkspaceContextService, PromiseConstructor, MatchingSchema, TextDocument, SchemaConfiguration, SchemaDraft, ErrorCode, Vocabularies } from '../jsonLanguageTypes';
 
 import * as l10n from '@vscode/l10n';
 import { createRegex } from '../utils/glob';
@@ -205,12 +205,14 @@ export class ResolvedSchema {
 	public readonly errors: SchemaDiagnostic[];
 	public readonly warnings: SchemaDiagnostic[];
 	public readonly schemaDraft: SchemaDraft | undefined;
+	public readonly activeVocabularies: Vocabularies | undefined;
 
-	constructor(schema: JSONSchema, errors: SchemaDiagnostic[] = [], warnings: SchemaDiagnostic[] = [], schemaDraft: SchemaDraft | undefined) {
+	constructor(schema: JSONSchema, errors: SchemaDiagnostic[] = [], warnings: SchemaDiagnostic[] = [], schemaDraft: SchemaDraft | undefined, activeVocabularies: Vocabularies | undefined) {
 		this.schema = schema;
 		this.errors = errors;
 		this.warnings = warnings;
 		this.schemaDraft = schemaDraft;
+		this.activeVocabularies = activeVocabularies;
 	}
 
 	public getSection(path: string[]): JSONSchema | undefined {
@@ -485,10 +487,25 @@ export class JSONSchemaService implements IJSONSchemaService {
 
 		const schemaDraft = schema.$schema ? getSchemaDraftFromId(schema.$schema) : undefined;
 		if (schemaDraft === SchemaDraft.v3) {
-			return this.promise.resolve(new ResolvedSchema({}, [toDiagnostic(l10n.t("Draft-03 schemas are not supported."), ErrorCode.SchemaUnsupportedFeature)], [], schemaDraft));
+			return this.promise.resolve(new ResolvedSchema({}, [toDiagnostic(l10n.t("Draft-03 schemas are not supported."), ErrorCode.SchemaUnsupportedFeature)], [], schemaDraft, undefined));
 		}
 
 		let usesUnsupportedFeatures = new Set();
+		let activeVocabularies: Vocabularies | undefined = undefined;
+
+		// Extract vocabularies from metaschema if present
+		const extractVocabularies = (metaschema: JSONSchema): Vocabularies | undefined => {
+			if (!metaschema.$vocabulary || typeof metaschema.$vocabulary !== 'object') {
+				return undefined;
+			}
+			const vocabs = new Set<string>();
+			for (const [uri, required] of Object.entries(metaschema.$vocabulary)) {
+				if (required === true) {
+					vocabs.add(uri);
+				}
+			}
+			return vocabs.size > 0 ? vocabs : undefined;
+		};
 
 		const contextService = this.contextService;
 
@@ -675,9 +692,6 @@ export class JSONSchemaService implements IJSONSchemaService {
 				if (schema.$dynamicRef) {
 					usesUnsupportedFeatures.add('$dynamicRef');
 				}
-				if (schema.$vocabulary) {
-					usesUnsupportedFeatures.add('$vocabulary');
-				}
 				if (schema.$dynamicAnchor) {
 					usesUnsupportedFeatures.add('$dynamicAnchor');
 				}
@@ -768,12 +782,42 @@ export class JSONSchemaService implements IJSONSchemaService {
 
 		// Register embedded schemas before resolving refs
 		registerEmbeddedSchemas(schema, handle.uri);
-		return resolveRefs(schema, schema, handle).then(_ => {
-			let resolveWarnings: SchemaDiagnostic[] = [];
-			if (usesUnsupportedFeatures.size) {
-				resolveWarnings.push(toDiagnostic(l10n.t('The schema uses meta-schema features ({0}) that are not yet supported by the validator.', Array.from(usesUnsupportedFeatures.keys()).join(', ')), ErrorCode.SchemaUnsupportedFeature));
+
+		// Resolve metaschema to extract vocabularies if present
+		const resolveMetaschemaVocabularies = (): PromiseLike<void> => {
+			if (!schema.$schema || typeof schema.$schema !== 'string') {
+				return this.promise.resolve(undefined);
 			}
-			return new ResolvedSchema(schema, resolveErrors, resolveWarnings, schemaDraft);
+
+			const metaschemaUri = schema.$schema;
+			const normalizedMetaschemaUri = normalizeId(metaschemaUri);
+			const metaschemaHandle = this.getOrAddSchemaHandle(normalizedMetaschemaUri);
+
+			return metaschemaHandle.getUnresolvedSchema().then(unresolvedMetaschema => {
+				// Only extract vocabularies if the metaschema has a $vocabulary property
+				// OR if it's draft 2019-09 or later (which support vocabularies)
+				const metaschemaDraft = unresolvedMetaschema.schema.$schema ? getSchemaDraftFromId(unresolvedMetaschema.schema.$schema) : undefined;
+				const isDraft2019OrLater = metaschemaDraft === SchemaDraft.v2019_09 || metaschemaDraft === SchemaDraft.v2020_12;
+				const hasVocabulary = unresolvedMetaschema.schema.$vocabulary && typeof unresolvedMetaschema.schema.$vocabulary === 'object';
+
+				if (hasVocabulary || isDraft2019OrLater) {
+					activeVocabularies = extractVocabularies(unresolvedMetaschema.schema);
+				}
+				return undefined;
+			}, () => {
+				// If we can't load the metaschema, that's okay - just proceed without vocabulary info
+				return undefined;
+			});
+		};
+
+		return resolveMetaschemaVocabularies().then(() => {
+			return resolveRefs(schema, schema, handle).then(_ => {
+				let resolveWarnings: SchemaDiagnostic[] = [];
+				if (usesUnsupportedFeatures.size) {
+					resolveWarnings.push(toDiagnostic(l10n.t('The schema uses meta-schema features ({0}) that are not yet supported by the validator.', Array.from(usesUnsupportedFeatures.keys()).join(', ')), ErrorCode.SchemaUnsupportedFeature));
+				}
+				return new ResolvedSchema(schema, resolveErrors, resolveWarnings, schemaDraft, activeVocabularies);
+			});
 		});
 	}
 

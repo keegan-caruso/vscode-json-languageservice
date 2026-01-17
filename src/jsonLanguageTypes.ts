@@ -39,6 +39,13 @@ export {
 };
 
 /**
+ * Represents a set of active JSON Schema vocabularies.
+ * Used to filter which keywords are processed during validation based on the metaschema's $vocabulary declaration.
+ * @since 2019-09
+ */
+export type Vocabularies = Set<string>;
+
+/**
  * Error codes used by diagnostics
  */
 export enum ErrorCode {
@@ -251,7 +258,7 @@ export interface PromiseConstructor {
  * 
  * @deprecated
  */
-export interface Thenable<R> extends PromiseLike<R> {}
+export interface Thenable<R> extends PromiseLike<R> { }
 
 export interface LanguageServiceParams {
 	/**
