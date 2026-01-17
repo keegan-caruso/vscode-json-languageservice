@@ -2108,7 +2108,7 @@ suite('JSON Schema', () => {
 		}
 	});
 
-	test('schema with $vocabulary shows unsupported feature warning', async function () {
+	test('schema with $vocabulary is supported', async function () {
 		const schema: JSONSchema = {
 			$schema: 'https://json-schema.org/draft/2020-12/schema',
 			$vocabulary: {
@@ -2123,11 +2123,7 @@ suite('JSON Schema', () => {
 		const { textDoc, jsonDoc } = toDocument(JSON.stringify({ name: 'test' }));
 		const validation = await ls.doValidation(textDoc, jsonDoc, { schemaValidation: 'warning' }, schema);
 
-		assert.strictEqual(validation.length, 1);
-		assert.ok(validation[0].message.includes('$vocabulary'));
-		assert.ok(validation[0].message.includes('not yet supported'));
-		assert.strictEqual(validation[0].severity, DiagnosticSeverity.Warning);
-		assert.strictEqual(validation[0].code, ErrorCode.SchemaUnsupportedFeature);
+		assert.strictEqual(validation.length, 0);
 	});
 
 	test('schema with $dynamicAnchor shows unsupported feature warning', async function () {
@@ -2187,9 +2183,197 @@ suite('JSON Schema', () => {
 		assert.strictEqual(validation.length, 1);
 		assert.ok(validation[0].message.includes('$dynamicRef'));
 		assert.ok(validation[0].message.includes('$dynamicAnchor'));
-		assert.ok(validation[0].message.includes('$vocabulary'));
+		assert.ok(!validation[0].message.includes('$vocabulary')); // $vocabulary is now supported
 		assert.ok(validation[0].message.includes('not yet supported'));
 		assert.strictEqual(validation[0].severity, DiagnosticSeverity.Warning);
 		assert.strictEqual(validation[0].code, ErrorCode.SchemaUnsupportedFeature);
+	});
+
+	suite('Vocabulary Support (JSON Schema 2019-09+)', () => {
+		test('schema without $schema should validate all keywords', async function () {
+			// Schema with no $schema - should use all keywords
+			const schema: JSONSchema = {
+				type: 'number',
+				minimum: 10
+			};
+
+			const ls = getLanguageService({});
+
+			// Valid case
+			const { textDoc: validDoc, jsonDoc: validJsonDoc } = toDocument('15');
+			const validValidation = await ls.doValidation(validDoc, validJsonDoc, {}, schema);
+			assert.strictEqual(validValidation.length, 0);
+
+			// Invalid case - should catch minimum violation
+			const { textDoc: invalidDoc, jsonDoc: invalidJsonDoc } = toDocument('5');
+			const invalidValidation = await ls.doValidation(invalidDoc, invalidJsonDoc, {}, schema);
+			assert.strictEqual(invalidValidation.length, 1);
+			assert.ok(invalidValidation[0].message.includes('minimum'));
+		});
+
+		test('metaschema with only applicator vocabulary should ignore validation keywords', async function () {
+			// Custom metaschema with only applicator vocabulary (no validation vocabulary)
+			const metaschema: JSONSchema = {
+				$id: 'http://test/metaschema-no-validation',
+				$vocabulary: {
+					'https://json-schema.org/draft/2019-09/vocab/core': true,
+					'https://json-schema.org/draft/2019-09/vocab/applicator': true
+					// NOTE: validation vocabulary is NOT included
+				},
+				type: 'object'
+			};
+
+			// Schema using the custom metaschema
+			const schema: JSONSchema = {
+				$schema: 'http://test/metaschema-no-validation',
+				type: 'number',
+				minimum: 10  // This should be ignored because validation vocabulary is not active
+			};
+
+			const schemaRequestService = async (uri: string): Promise<string> => {
+				if (uri === 'http://test/metaschema-no-validation') {
+					return JSON.stringify(metaschema);
+				}
+				return '{}';
+			};
+
+			const ls = getLanguageService({ schemaRequestService });
+
+			// Test with value below minimum - should NOT fail because minimum should be ignored
+			const { textDoc, jsonDoc } = toDocument('5');
+			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
+			assert.strictEqual(validation.length, 0, 'Validation keywords should be ignored when validation vocabulary is not active');
+		});
+
+		test('metaschema with validation vocabulary should process validation keywords', async function () {
+			// Custom metaschema with validation vocabulary
+			const metaschema: JSONSchema = {
+				$id: 'http://test/metaschema-with-validation',
+				$vocabulary: {
+					'https://json-schema.org/draft/2019-09/vocab/core': true,
+					'https://json-schema.org/draft/2019-09/vocab/validation': true
+				},
+				type: 'object'
+			};
+
+			const schema: JSONSchema = {
+				$schema: 'http://test/metaschema-with-validation',
+				type: 'number',
+				minimum: 10
+			};
+
+			const schemaRequestService = async (uri: string): Promise<string> => {
+				if (uri === 'http://test/metaschema-with-validation') {
+					return JSON.stringify(metaschema);
+				}
+				return '{}';
+			};
+
+			const ls = getLanguageService({ schemaRequestService });
+
+			// Test with value below minimum - should fail
+			const { textDoc, jsonDoc } = toDocument('5');
+			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
+			assert.strictEqual(validation.length, 1);
+			assert.ok(validation[0].message.includes('minimum'));
+		});
+
+		test('applicator keywords work when validation vocabulary is disabled', async function () {
+			// Custom metaschema without validation vocabulary
+			const metaschema: JSONSchema = {
+				$id: 'http://test/metaschema-applicator-only',
+				$vocabulary: {
+					'https://json-schema.org/draft/2019-09/vocab/core': true,
+					'https://json-schema.org/draft/2019-09/vocab/applicator': true
+				},
+				type: 'object'
+			};
+
+			const schema: JSONSchema = {
+				$schema: 'http://test/metaschema-applicator-only',
+				properties: {
+					name: { type: 'string' },
+					age: { minimum: 0 }  // minimum should be ignored
+				},
+				required: ['name']  // required should be ignored (it's a validation keyword)
+			};
+
+			const schemaRequestService = async (uri: string): Promise<string> => {
+				if (uri === 'http://test/metaschema-applicator-only') {
+					return JSON.stringify(metaschema);
+				}
+				return '{}';
+			};
+
+			const ls = getLanguageService({ schemaRequestService });
+
+			// Missing required field - should NOT fail because required is a validation keyword
+			const { textDoc, jsonDoc } = toDocument('{}');
+			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
+			assert.strictEqual(validation.length, 0, 'Validation keywords like "required" should be ignored');
+		});
+
+		test('draft-06 schemas should not use vocabulary filtering', async function () {
+			// Draft-06 schema (predates vocabulary feature)
+			const schema: JSONSchema = {
+				$schema: 'http://json-schema.org/draft-06/schema#',
+				type: 'number',
+				minimum: 10
+			};
+
+			const ls = getLanguageService({});
+
+			// Should still validate minimum keyword
+			const { textDoc, jsonDoc } = toDocument('5');
+			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
+			assert.strictEqual(validation.length, 1);
+			assert.ok(validation[0].message.includes('minimum'), 'Draft-06 schemas should process all keywords');
+		});
+
+		test('draft-07 schemas should not use vocabulary filtering', async function () {
+			// Draft-07 schema (predates vocabulary feature)
+			const schema: JSONSchema = {
+				$schema: 'http://json-schema.org/draft-07/schema#',
+				type: 'number',
+				minimum: 10
+			};
+
+			const ls = getLanguageService({});
+
+			// Should still validate minimum keyword
+			const { textDoc, jsonDoc } = toDocument('5');
+			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
+			assert.strictEqual(validation.length, 1);
+			assert.ok(validation[0].message.includes('minimum'), 'Draft-07 schemas should process all keywords');
+		});
+
+		test('metaschema without $vocabulary should process all keywords', async function () {
+			// Custom metaschema without $vocabulary property
+			const metaschema: JSONSchema = {
+				$id: 'http://test/metaschema-no-vocab-property',
+				type: 'object'
+			};
+
+			const schema: JSONSchema = {
+				$schema: 'http://test/metaschema-no-vocab-property',
+				type: 'number',
+				minimum: 10
+			};
+
+			const schemaRequestService = async (uri: string): Promise<string> => {
+				if (uri === 'http://test/metaschema-no-vocab-property') {
+					return JSON.stringify(metaschema);
+				}
+				return '{}';
+			};
+
+			const ls = getLanguageService({ schemaRequestService });
+
+			// Should validate all keywords (backward compatibility)
+			const { textDoc, jsonDoc } = toDocument('5');
+			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
+			assert.strictEqual(validation.length, 1);
+			assert.ok(validation[0].message.includes('minimum'), 'Schemas using metaschemas without $vocabulary should process all keywords');
+		});
 	});
 });
