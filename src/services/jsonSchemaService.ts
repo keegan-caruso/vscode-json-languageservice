@@ -267,6 +267,39 @@ export class JSONSchemaService implements IJSONSchemaService {
 	private requestService: SchemaRequestService | undefined;
 	private promiseConstructor: PromiseConstructor;
 
+	private static traverseSchemaProperties(node: JSONSchema, callback: (schema: JSONSchema) => void): void {
+		const SINGLE_SCHEMA_PROPS = ['additionalItems', 'additionalProperties', 'not', 'contains',
+			'propertyNames', 'if', 'then', 'else', 'unevaluatedItems', 'unevaluatedProperties', 'items'] as const;
+		const SCHEMA_MAP_PROPS = ['definitions', '$defs', 'properties', 'patternProperties',
+			'dependencies', 'dependentSchemas'] as const;
+		const SCHEMA_ARRAY_PROPS = ['anyOf', 'allOf', 'oneOf', 'prefixItems'] as const;
+
+		const visitValue = (value: any): void => {
+			if (value && typeof value === 'object') {
+				if (Array.isArray(value)) {
+					value.forEach(item => visitValue(item));
+				} else {
+					callback(value);
+				}
+			}
+		};
+
+		for (const prop of SINGLE_SCHEMA_PROPS) {
+			visitValue(node[prop]);
+		}
+
+		for (const prop of SCHEMA_MAP_PROPS) {
+			const map = node[prop];
+			if (map && typeof map === 'object') {
+				Object.values(map).forEach(visitValue);
+			}
+		}
+
+		for (const prop of SCHEMA_ARRAY_PROPS) {
+			visitValue(node[prop]);
+		}
+	}
+
 	private cachedSchemaForResource: { resource: string; resolvedSchema: PromiseLike<ResolvedSchema | undefined> } | undefined;
 
 	constructor(requestService?: SchemaRequestService, contextService?: WorkspaceContextService, promiseConstructor?: PromiseConstructor) {
@@ -480,25 +513,29 @@ export class JSONSchemaService implements IJSONSchemaService {
 			return handle.anchors.get(id);
 		};
 
+		const getSchemaId = (schema: JSONSchema): string | undefined => schema.$id || schema.id;
+
 		const merge = (target: JSONSchema, section: any): void => {
 			for (const key in section) {
-				if (section.hasOwnProperty(key) && key !== 'id' && key !== '$id') {
-					// Deep merge for properties and patternProperties to combine them
-					if ((key === 'properties' || key === 'patternProperties') &&
-						typeof section[key] === 'object' && section[key] !== null &&
-						typeof (<any>target)[key] === 'object' && (<any>target)[key] !== null) {
-						// Merge the properties/patternProperties objects
-						(<any>target)[key] = { ...(<any>target)[key], ...section[key] };
-					} else {
-						(<any>target)[key] = section[key];
-					}
+				if (!section.hasOwnProperty(key) || key === 'id' || key === '$id') {
+					continue;
 				}
+
+				// Deep merge for properties and patternProperties to combine them
+				const shouldDeepMerge = (key === 'properties' || key === 'patternProperties') &&
+					typeof section[key] === 'object' && section[key] !== null &&
+					typeof (<any>target)[key] === 'object' && (<any>target)[key] !== null;
+
+				(<any>target)[key] = shouldDeepMerge
+					? { ...(<any>target)[key], ...section[key] }
+					: section[key];
 			}
+
 			// Preserve $id as a non-enumerable hidden property for $recursiveRef resolution
-			// Using Object.defineProperty ensures it doesn't appear in object comparisons
-			if (section.$id || section.id) {
+			const id = section.$id || section.id;
+			if (id) {
 				Object.defineProperty(target, '_originalId', {
-					value: section.$id || section.id,
+					value: id,
 					enumerable: false,
 					writable: true,
 					configurable: true
@@ -506,22 +543,13 @@ export class JSONSchemaService implements IJSONSchemaService {
 			}
 		};
 
-		// Check if a schema or its $ref'd content has keywords that require scope isolation
-		// (i.e., keywords that track evaluated properties/items)
-		const needsScopeIsolation = (schema: JSONSchema): boolean => {
-			return schema.unevaluatedProperties !== undefined ||
-				schema.unevaluatedItems !== undefined;
-		};
-
-		// Check if target schema has sibling keywords that evaluate properties
-		const hasSiblingEvaluationKeywords = (schema: JSONSchema): boolean => {
-			return schema.properties !== undefined ||
-				schema.patternProperties !== undefined ||
-				schema.additionalProperties !== undefined ||
-				schema.allOf !== undefined ||
-				schema.anyOf !== undefined ||
-				schema.oneOf !== undefined ||
-				schema.if !== undefined;
+		// Check if schemas need scope isolation for unevaluated* keywords
+		const needsScopeIsolation = (section: JSONSchema, target: JSONSchema): boolean => {
+			const hasUnevaluated = section.unevaluatedProperties !== undefined || section.unevaluatedItems !== undefined;
+			const hasSiblingEvaluation = target.properties !== undefined || target.patternProperties !== undefined ||
+				target.additionalProperties !== undefined || target.allOf !== undefined || target.anyOf !== undefined ||
+				target.oneOf !== undefined || target.if !== undefined;
+			return hasUnevaluated && hasSiblingEvaluation;
 		};
 
 		const mergeRef = (target: JSONSchema, sourceRoot: JSONSchema, sourceHandle: SchemaHandle, refSegment: string | undefined): void => {
@@ -540,14 +568,15 @@ export class JSONSchemaService implements IJSONSchemaService {
 				// When the $ref'd schema has unevaluatedProperties/unevaluatedItems, it should NOT
 				// see properties/items evaluated by sibling keywords.
 				// To achieve this, we wrap the $ref in an allOf when needed.
-				if (needsScopeIsolation(section) && hasSiblingEvaluationKeywords(target)) {
+				if (needsScopeIsolation(section, target)) {
 					// Extract sibling keywords into a separate schema
+					const RESERVED_KEYS = new Set(['$ref', '$defs', 'definitions', '$schema', '$id', 'id']);
 					const siblingSchema: JSONSchema = {};
 					const refSchema = { ...section };
 
 					// Move all existing properties from target to siblingSchema
 					for (const key in target) {
-						if (target.hasOwnProperty(key) && key !== '$ref' && key !== '$defs' && key !== 'definitions' && key !== '$schema' && key !== '$id' && key !== 'id') {
+						if (target.hasOwnProperty(key) && !RESERVED_KEYS.has(key)) {
 							(siblingSchema as any)[key] = (target as any)[key];
 							delete (target as any)[key];
 						}
@@ -597,7 +626,7 @@ export class JSONSchemaService implements IJSONSchemaService {
 
 				// Check if this schema has its own $id that creates a new base scope
 				// This needs to be determined BEFORE processing refs
-				const id = schema.$id || schema.id;
+				const id = getSchemaId(schema);
 				let newBase = currentBase;
 				let newBaseHandle = currentBaseHandle;
 				if (!isRoot && isString(id) && id.charAt(0) !== '#') {
@@ -648,54 +677,9 @@ export class JSONSchemaService implements IJSONSchemaService {
 				}
 
 				// Continue traversing child schemas with the (potentially updated) base
-				const visit = (ref: JSONSchemaRef | undefined) => {
-					if (ref && typeof ref === 'object') {
-						traverseWithBaseTracking(ref, newBase, newBaseHandle, false, seen);
-					}
-				};
-				const visitMap = (map: JSONSchemaMap | { [prop: string]: string[] } | undefined) => {
-					if (map && typeof map === 'object') {
-						for (const key in map) {
-							const value = (map as any)[key];
-							if (value && typeof value === 'object' && !Array.isArray(value)) {
-								traverseWithBaseTracking(value, newBase, newBaseHandle, false, seen);
-							}
-						}
-					}
-				};
-				const visitArray = (arr: JSONSchemaRef[] | undefined) => {
-					if (Array.isArray(arr)) {
-						for (const item of arr) {
-							visit(item);
-						}
-					}
-				};
-
-				visit(schema.additionalItems);
-				visit(schema.additionalProperties);
-				visit(schema.not);
-				visit(schema.contains);
-				visit(schema.propertyNames);
-				visit(schema.if);
-				visit(schema.then);
-				visit(schema.else);
-				visit(schema.unevaluatedItems);
-				visit(schema.unevaluatedProperties);
-				visitMap(schema.definitions);
-				visitMap(schema.$defs);
-				visitMap(schema.properties);
-				visitMap(schema.patternProperties);
-				visitMap(schema.dependencies as JSONSchemaMap);
-				visitMap(schema.dependentSchemas);
-				visitArray(schema.anyOf);
-				visitArray(schema.allOf);
-				visitArray(schema.oneOf);
-				visitArray(schema.prefixItems);
-				if (Array.isArray(schema.items)) {
-					visitArray(schema.items);
-				} else {
-					visit(schema.items);
-				}
+				JSONSchemaService.traverseSchemaProperties(schema, (childSchema) => {
+					traverseWithBaseTracking(childSchema, newBase, newBaseHandle, false, seen);
+				});
 			};
 
 			traverseWithBaseTracking(node, parentSchema, parentHandle, true, new Set<JSONSchema>());
@@ -707,15 +691,14 @@ export class JSONSchemaService implements IJSONSchemaService {
 			const result = new Map<string, JSONSchema>();
 			// Custom traversal that stops at sub-schemas with their own $id
 			// because those create a new URI scope for anchors
-			const traverseForAnchors = (node: JSONSchema, isRoot: boolean) => {
+			const traverseForAnchors = (node: JSONSchema, isRoot: boolean): void => {
 				if (!node || typeof node !== 'object') {
 					return;
 				}
 				// If this node has its own $id (and it's not the root), it's a new URI scope
-				// Don't collect anchors from it - they belong to that scope
-				const id = node.$id || node.id;
+				const id = getSchemaId(node);
 				if (!isRoot && isString(id) && id.charAt(0) !== '#') {
-					return; // Stop - this is a new URI scope
+					return;
 				}
 
 				// Collect anchor from this node
@@ -729,54 +712,9 @@ export class JSONSchemaService implements IJSONSchemaService {
 				}
 
 				// Continue traversing child schemas
-				const visitRef = (ref: JSONSchemaRef | undefined) => {
-					if (ref && typeof ref === 'object') {
-						traverseForAnchors(ref, false);
-					}
-				};
-				const visitMap = (map: JSONSchemaMap | { [prop: string]: string[] } | undefined) => {
-					if (map && typeof map === 'object') {
-						for (const key in map) {
-							const value = (map as any)[key];
-							if (value && typeof value === 'object' && !Array.isArray(value)) {
-								traverseForAnchors(value, false);
-							}
-						}
-					}
-				};
-				const visitArray = (arr: JSONSchemaRef[] | undefined) => {
-					if (Array.isArray(arr)) {
-						for (const item of arr) {
-							visitRef(item);
-						}
-					}
-				};
-
-				visitRef(node.additionalItems);
-				visitRef(node.additionalProperties);
-				visitRef(node.not);
-				visitRef(node.contains);
-				visitRef(node.propertyNames);
-				visitRef(node.if);
-				visitRef(node.then);
-				visitRef(node.else);
-				visitRef(node.unevaluatedItems);
-				visitRef(node.unevaluatedProperties);
-				visitMap(node.definitions);
-				visitMap(node.$defs);
-				visitMap(node.properties);
-				visitMap(node.patternProperties);
-				visitMap(node.dependencies as JSONSchemaMap);
-				visitMap(node.dependentSchemas);
-				visitArray(node.anyOf);
-				visitArray(node.allOf);
-				visitArray(node.oneOf);
-				visitArray(node.prefixItems);
-				if (Array.isArray(node.items)) {
-					visitArray(node.items);
-				} else {
-					visitRef(node.items);
-				}
+				JSONSchemaService.traverseSchemaProperties(node, (childSchema) => {
+					traverseForAnchors(childSchema, false);
+				});
 			};
 
 			traverseForAnchors(root, true);
@@ -798,83 +736,32 @@ export class JSONSchemaService implements IJSONSchemaService {
 
 			const resolveId = (id: string, currentBaseUri: string): string => {
 				if (contextService && !/^[A-Za-z][A-Za-z0-9+\-.+]*:\/.*/.test(id)) {
-					// Relative URI - resolve against current base
 					return normalizeId(contextService.resolveRelativePath(id, currentBaseUri));
 				}
 				return normalizeId(id);
 			};
 
-			const visit = (node: JSONSchema, currentBaseUri: string) => {
+			const visit = (node: JSONSchema, currentBaseUri: string): void => {
 				if (!node || typeof node !== 'object' || seen.has(node)) {
 					return;
 				}
 				seen.add(node);
 
 				// Check if this node has its own $id that changes the base URI
-				const id = node.$id || node.id;
+				const id = getSchemaId(node);
 				let newBaseUri = currentBaseUri;
 				if (isString(id) && id.charAt(0) !== '#') {
-					// This is an absolute or relative URI, not a plain anchor
 					const resolvedUri = resolveId(id, currentBaseUri);
-					// Register this embedded schema so it can be found by $ref
 					if (!this.schemasById[resolvedUri]) {
 						this.addSchemaHandle(resolvedUri, node);
 					}
-					// Update the base URI for nested schemas
 					newBaseUri = resolvedUri;
 				}
 
-				// Visit child schemas with the (potentially updated) base URI
-				const visitRef = (ref: JSONSchemaRef | undefined) => {
-					if (ref && typeof ref === 'object') {
-						visit(ref, newBaseUri);
-					}
-				};
-				const visitMap = (map: JSONSchemaMap | { [prop: string]: string[] } | undefined) => {
-					if (map && typeof map === 'object') {
-						for (const key in map) {
-							const value = (map as any)[key];
-							if (value && typeof value === 'object' && !Array.isArray(value)) {
-								visit(value, newBaseUri);
-							}
-						}
-					}
-				};
-				const visitArray = (arr: JSONSchemaRef[] | undefined) => {
-					if (Array.isArray(arr)) {
-						for (const item of arr) {
-							if (item && typeof item === 'object') {
-								visit(item, newBaseUri);
-							}
-						}
-					}
-				};
-
-				visitRef(node.additionalItems);
-				visitRef(node.additionalProperties);
-				visitRef(node.not);
-				visitRef(node.contains);
-				visitRef(node.propertyNames);
-				visitRef(node.if);
-				visitRef(node.then);
-				visitRef(node.else);
-				visitRef(node.unevaluatedItems);
-				visitRef(node.unevaluatedProperties);
-				visitMap(node.definitions);
-				visitMap(node.$defs);
-				visitMap(node.properties);
-				visitMap(node.patternProperties);
-				visitMap(node.dependencies as JSONSchemaMap);
-				visitMap(node.dependentSchemas);
-				visitArray(node.anyOf);
-				visitArray(node.allOf);
-				visitArray(node.oneOf);
-				visitArray(node.prefixItems);
-				if (Array.isArray(node.items)) {
-					visitArray(node.items);
-				} else {
-					visitRef(node.items);
-				}
+				// Visit child schemas
+				JSONSchemaService.traverseSchemaProperties(node, (childSchema) => {
+					visit(childSchema, newBaseUri);
+				});
 			};
 
 			visit(root, baseUri);
