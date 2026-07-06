@@ -199,15 +199,5 @@ function initializeTests() {
 	});
 }
 const skippedTests = new Set<string>([
-	// These require true dynamic-scope resolution of $dynamicRef, which is added in a
-	// follow-up change. With the static ($ref-like) fallback they resolve to the wrong
-	// (lexically-initial) target, so they are skipped until dynamic resolution lands.
-	"draft2020-12/dynamicRef.json/An $anchor with the same name as a $dynamicAnchor should not be used for dynamic scope resolution/Any array is valid",
-	"draft2020-12/dynamicRef.json/A $dynamicRef without a matching $dynamicAnchor in the same schema resource should behave like a normal $ref to $anchor/Any array is valid",
-	"draft2020-12/dynamicRef.json/A $dynamicRef with a non-matching $dynamicAnchor in the same schema resource should behave like a normal $ref to $anchor/Any array is valid",
-	"draft2020-12/dynamicRef.json/A $dynamicRef that initially resolves to a schema with a matching $dynamicAnchor should resolve to the first $dynamicAnchor in the dynamic scope/The recursive part is not valid against the root",
-	"draft2020-12/dynamicRef.json/multiple dynamic paths to the $dynamicRef keyword/recurse to integerNode - floats are not allowed",
-	"draft2020-12/dynamicRef.json/after leaving a dynamic scope, it should not be used by a $dynamicRef/string matches /$defs/thingy, but the $dynamicRef does not stop here",
-	"draft2020-12/dynamicRef.json/after leaving a dynamic scope, it should not be used by a $dynamicRef//then/$defs/thingy is the final stop for the $dynamicRef",
 ]);
 initializeTests();

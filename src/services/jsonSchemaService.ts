@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as Json from 'jsonc-parser';
-import { JSONSchema, JSONSchemaRef, MergedJSONSchema } from '../jsonSchema.js';
+import { JSONSchema, JSONSchemaRef, MergedJSONSchema, DynamicRefInfo, AnchorMaps } from '../jsonSchema.js';
 import { URI } from 'vscode-uri';
 import * as Strings from '../utils/strings.js';
 import { asSchema, getSchemaDraftFromId, JSONDocument, normalizeId } from '../parser/jsonParser.js';
@@ -535,6 +535,18 @@ export class JSONSchemaService implements IJSONSchemaService {
 			});
 		};
 
+		// Get (creating on first use) the hidden $dynamicRefInfo record for a $dynamicRef
+		// node. Its fields are populated across two passes — `scope` while collecting
+		// anchors, `target`/`name` while resolving the reference — over the same object.
+		const dynamicRefInfoOf = (node: MergedJSONSchema): DynamicRefInfo => {
+			let info = node.$dynamicRefInfo;
+			if (!info) {
+				info = {};
+				setHidden(node, '$dynamicRefInfo', info);
+			}
+			return info;
+		};
+
 		const findSectionByJSONPointer = (schema: JSONSchema, path: string): any => {
 			path = decodeURIComponent(path);
 			let current: any = schema;
@@ -620,13 +632,14 @@ export class JSONSchemaService implements IJSONSchemaService {
 			// Propagate hidden $dynamicRef metadata. When a $dynamicRef lives directly on
 			// a $ref'd schema resource, that resource is a distinct object from the
 			// referencing schema and is often resolved standalone first — deleting its
-			// $dynamicRef and recording the (non-enumerable, so not copied above) target.
-			// Carry it over so the merged schema still resolves the reference. (When the
-			// $dynamicRef lives on a child of the merged resource, that child is shared by
-			// reference and already carries its own metadata.)
+			// $dynamicRef and recording the (non-enumerable, so not copied above)
+			// $dynamicRefInfo. Carry it over so the merged schema still resolves
+			// dynamically. (When the $dynamicRef lives on a child of the merged resource,
+			// that child is shared by reference and already carries its own metadata.)
 			const src = section as MergedJSONSchema;
-			if (src.$dynamicRefTarget !== undefined && (target as MergedJSONSchema).$dynamicRefTarget === undefined) {
-				setHidden(target, '$dynamicRefTarget', src.$dynamicRefTarget);
+			const dst = target as MergedJSONSchema;
+			if (src.$dynamicRefInfo !== undefined && dst.$dynamicRefInfo === undefined) {
+				setHidden(target, '$dynamicRefInfo', src.$dynamicRefInfo);
 			}
 		};
 
@@ -798,6 +811,55 @@ export class JSONSchemaService implements IJSONSchemaService {
 			});
 		};
 
+		const resolveDynamicRef = (schema: JSONSchema, newBase: JSONSchema, newBaseHandle: SchemaHandle, currentBaseHandle: SchemaHandle): PromiseLike<any> | undefined => {
+			// 2020-12 $dynamicRef. Its *initial* target is resolved statically, exactly
+			// like a plain $ref, and kept as hidden metadata (info.target) instead of
+			// being merged into `schema`, so `schema`'s own keywords are preserved. The
+			// referenced plain-name fragment is recorded as info.name. The "bookending"
+			// decision (does the initial target name a $dynamicAnchor?) and the
+			// dynamic-scope walk are both deferred to validation time, where the (possibly
+			// asynchronously resolved) target is fully populated. Returns the external-
+			// resolution promise (if any) for the caller to add to openPromises.
+			const info = dynamicRefInfoOf(schema as MergedJSONSchema);
+			const ref = schema.$dynamicRef!;
+			const segments = ref.split('#', 2);
+			delete schema.$dynamicRef;
+
+			// A JSON-pointer fragment ("#/…") or a missing fragment can never name a
+			// $dynamicAnchor, so such a $dynamicRef always behaves like a plain $ref.
+			const fragment = segments[1];
+			const dynamicName = (isString(fragment) && fragment.length > 0 && fragment.charAt(0) !== '/') ? fragment : undefined;
+			if (dynamicName !== undefined) {
+				info.name = dynamicName;
+			}
+
+			if (segments[0].length > 0) {
+				// External / relative reference: resolve the target document into a
+				// throwaway container so `schema`'s own keywords are preserved.
+				const target: JSONSchema = {};
+				info.target = target;
+				const refBase = (newBase === schema) ? currentBaseHandle : newBaseHandle;
+				return resolveExternalLink(target, segments[0], segments[1], refBase);
+			}
+
+			// Internal reference. Resolve #name within the *lexical* schema resource
+			// (recorded as info.scope before $ref merging flattened resource boundaries)
+			// so a sibling resource's identically-named anchor cannot leak in.
+			let target: JSONSchema | undefined;
+			if (dynamicName !== undefined && info.scope?.$anchorMaps) {
+				target = info.scope.$anchorMaps.local.get(dynamicName);
+			}
+			if (target === undefined) {
+				// JSON-pointer fragment, or no lexical anchor found: fall back to a plain
+				// static $ref resolution against the current base.
+				const container: JSONSchema = {};
+				mergeRef(container, newBase, newBaseHandle, segments[1]);
+				target = container;
+			}
+			info.target = target;
+			return undefined;
+		};
+
 		const resolveRefs = (node: JSONSchema, parentSchema: JSONSchema, parentHandle: SchemaHandle): PromiseLike<any> => {
 			const openPromises: PromiseLike<any>[] = [];
 
@@ -864,30 +926,12 @@ export class JSONSchemaService implements IJSONSchemaService {
 					}
 				}
 
-				if (schema.$dynamicRef) {
-					// 2020-12 $dynamicRef, resolved here as a plain $ref: its target is
-					// resolved statically (against the reference's own base URI) and kept
-					// as hidden metadata ($dynamicRefTarget) instead of being merged into
-					// `schema`, so `schema`'s own sibling keywords are preserved. The
-					// validator then validates the instance against that target. (True
-					// dynamic-scope resolution is layered on top of this in a later step.)
-					const ref = schema.$dynamicRef;
-					const segments = ref.split('#', 2);
-					delete schema.$dynamicRef;
-
-					if (segments[0].length > 0) {
-						// External / relative reference: resolve the target document into a
-						// throwaway container so `schema`'s own keywords are preserved.
-						const target: JSONSchema = {};
-						setHidden(schema, '$dynamicRefTarget', target);
-						const refBase = (newBase === schema) ? currentBaseHandle : newBaseHandle;
-						openPromises.push(resolveExternalLink(target, segments[0], segments[1], refBase));
-					} else {
-						// Internal reference: resolve like a plain $ref against the current
-						// base into a throwaway container.
-						const container: JSONSchema = {};
-						mergeRef(container, newBase, newBaseHandle, segments[1]);
-						setHidden(schema, '$dynamicRefTarget', container);
+				// $dynamicRef is a 2020-12 core keyword. In earlier drafts it is an
+				// unknown keyword, so leave it untouched and unresolved (ignored) there.
+				if (schema.$dynamicRef && (schemaDraft === undefined || schemaDraft >= SchemaDraft.v2020_12)) {
+					const dynamicRefPromise = resolveDynamicRef(schema, newBase, newBaseHandle, currentBaseHandle);
+					if (dynamicRefPromise) {
+						openPromises.push(dynamicRefPromise);
 					}
 				}
 
@@ -953,6 +997,62 @@ export class JSONSchemaService implements IJSONSchemaService {
 			return result;
 		};
 
+		// 2020-12: group $anchor / $dynamicAnchor declarations by the schema resource
+		// ($id scope) that contains them, and attach each resource's name→node maps to
+		// its resource-root node as hidden metadata ($anchorMaps):
+		//   - $anchorMaps.dynamic: only $dynamicAnchor names, used by the validator to
+		//     walk the dynamic scope (outermost resource first).
+		//   - $anchorMaps.local: both $anchor and $dynamicAnchor names, used to resolve
+		//     an internal $dynamicRef's initial target within its own resource.
+		// Each $dynamicRef node also gets its lexical resource recorded as
+		// $dynamicRefInfo.scope. This must run on the original schema, before $ref
+		// resolution merges (and thereby flattens) resource boundaries; node identities
+		// are preserved through in-place resolution, so the attached metadata stays valid.
+		const collectDynamicAnchors = (root: JSONSchema): void => {
+			if (!(schemaDraft === undefined || schemaDraft >= SchemaDraft.v2020_12)) {
+				return;
+			}
+			const seen = new Set<JSONSchema>();
+			const visit = (node: JSONSchema, resourceRoot: MergedJSONSchema): void => {
+				if (!node || typeof node !== 'object' || seen.has(node)) {
+					return;
+				}
+				seen.add(node);
+
+				// A node with its own $id (or the document root) starts a new resource.
+				let currentRoot = resourceRoot;
+				const id = getSchemaId(node);
+				if (node === root || (isString(id) && id.charAt(0) !== '#')) {
+					currentRoot = node as MergedJSONSchema;
+					if (!currentRoot.$anchorMaps) {
+						const maps: AnchorMaps = { dynamic: new Map<string, JSONSchema>(), local: new Map<string, JSONSchema>() };
+						setHidden(currentRoot, '$anchorMaps', maps);
+					}
+				}
+
+				const maps = currentRoot.$anchorMaps!;
+				if (isString(node.$dynamicAnchor)) {
+					if (!maps.dynamic.has(node.$dynamicAnchor)) {
+						maps.dynamic.set(node.$dynamicAnchor, node);
+					}
+					if (!maps.local.has(node.$dynamicAnchor)) {
+						maps.local.set(node.$dynamicAnchor, node);
+					}
+				}
+				if (isString(node.$anchor) && !maps.local.has(node.$anchor)) {
+					maps.local.set(node.$anchor, node);
+				}
+				if (isString(node.$dynamicRef)) {
+					dynamicRefInfoOf(node as MergedJSONSchema).scope = currentRoot;
+				}
+
+				JSONSchemaService.traverseSchemaProperties(node, (childSchema) => {
+					visit(childSchema, currentRoot);
+				});
+			};
+			visit(root, root as MergedJSONSchema);
+		};
+
 		// Collect and register embedded schemas with $id so they can be resolved as external refs
 		// This traversal tracks the current base URI so nested $id values are resolved correctly
 		const registerEmbeddedSchemas = (root: JSONSchema, baseUri: string): void => {
@@ -1002,9 +1102,11 @@ export class JSONSchemaService implements IJSONSchemaService {
 		// Collect anchors eagerly before $ref resolution mutates the schema.
 		// resolveRefs merges referenced nodes (including $anchor) into $ref targets,
 		// so a lazy collectAnchors call could see duplicates from merged copies.
-		// $dynamicAnchor names are registered as ordinary anchors here (see
-		// collectAnchors), so a $dynamicRef resolves to them like a plain $ref.
 		handle.anchors = collectAnchors(schema);
+
+		// Collect $dynamicAnchor maps eagerly too, for the same reason: resource
+		// boundaries must be read before $ref resolution flattens them.
+		collectDynamicAnchors(schema);
 
 		// Resolve meta-schema to extract vocabularies if present
 		const resolveMetaschemaVocabularies = (): PromiseLike<void> => {

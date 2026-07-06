@@ -2451,6 +2451,59 @@ suite('JSON Schema', () => {
 		assert.strictEqual(validation.length, 0);
 	});
 
+	test('$dynamicRef applies alongside sibling keywords', async function () {
+		const schema: JSONSchema = {
+			$schema: 'https://json-schema.org/draft/2020-12/schema',
+			type: 'array',
+			// maxLength is a sibling of $dynamicRef on the same node: per 2020-12 it
+			// must still be applied, not skipped just because $dynamicRef is present.
+			items: { $dynamicRef: '#node', maxLength: 2 },
+			$defs: {
+				node: { $dynamicAnchor: 'node', type: 'string' }
+			}
+		};
+
+		const ls = getLanguageService({});
+
+		// Valid: every item is a string of length <= 2
+		{
+			const { textDoc, jsonDoc } = toDocument(JSON.stringify(['ok', 'hi']));
+			const validation = await ls.doValidation(textDoc, jsonDoc, { schemaValidation: 'warning' }, schema);
+			assert.strictEqual(validation.length, 0);
+		}
+		// Invalid: 'toolong' resolves through $dynamicRef to the string schema, but
+		// violates the sibling maxLength keyword on the same node.
+		{
+			const { textDoc, jsonDoc } = toDocument(JSON.stringify(['ok', 'toolong']));
+			const validation = await ls.doValidation(textDoc, jsonDoc, { schemaValidation: 'warning' }, schema);
+			assert.ok(validation.length > 0, 'sibling maxLength alongside $dynamicRef should be enforced');
+		}
+	});
+
+	test('$dynamicRef is ignored as an unknown keyword before 2020-12', async function () {
+		// In draft-07 $dynamicRef is not a keyword; it must be ignored (left
+		// unresolved), not resolved like a reference (which previously produced a
+		// spurious "cannot be resolved" error).
+		const schema: JSONSchema = {
+			$schema: 'http://json-schema.org/draft-07/schema#',
+			type: 'object',
+			properties: {
+				list: { $dynamicRef: '#node' }
+			},
+			$defs: {
+				node: { $dynamicAnchor: 'node', type: 'array' }
+			}
+		};
+
+		const ls = getLanguageService({});
+
+		// $dynamicRef ignored -> `list` is unconstrained -> a non-array value is valid.
+		const { textDoc, jsonDoc } = toDocument(JSON.stringify({ list: 'not-an-array' }));
+		const validation = await ls.doValidation(textDoc, jsonDoc, { schemaValidation: 'warning' }, schema);
+
+		assert.strictEqual(validation.length, 0);
+	});
+
 	suite('Vocabulary Support (JSON Schema 2019-09+)', () => {
 		// Schema with no $schema - should use all keywords
 		test('schema without $schema should validate all keywords', async function () {
