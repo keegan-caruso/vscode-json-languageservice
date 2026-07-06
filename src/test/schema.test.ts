@@ -2389,7 +2389,7 @@ suite('JSON Schema', () => {
 		assert.strictEqual(validation.length, 0);
 	});
 
-	test('schema with $dynamicAnchor shows unsupported feature warning', async function () {
+	test('schema with $dynamicAnchor is supported', async function () {
 		const schema: JSONSchema = {
 			$schema: 'https://json-schema.org/draft/2020-12/schema',
 			$dynamicAnchor: 'items',
@@ -2401,55 +2401,54 @@ suite('JSON Schema', () => {
 		const { textDoc, jsonDoc } = toDocument(JSON.stringify({ name: 'test' }));
 		const validation = await ls.doValidation(textDoc, jsonDoc, { schemaValidation: 'warning' }, schema);
 
-		assert.strictEqual(validation.length, 1);
-		assert.ok(validation[0].message.includes('$dynamicAnchor'));
-		assert.ok(validation[0].message.includes('not yet supported'));
-		assert.strictEqual(validation[0].severity, DiagnosticSeverity.Warning);
-		assert.strictEqual(validation[0].code, ErrorCode.SchemaUnsupportedFeature);
+		assert.strictEqual(validation.length, 0);
 	});
 
-	test('schema with $dynamicRef shows unsupported feature warning', async function () {
+	test('schema with $dynamicRef is supported', async function () {
 		const schema: JSONSchema = {
 			$schema: 'https://json-schema.org/draft/2020-12/schema',
-			$dynamicRef: '#items',
-			type: 'object'
+			type: 'array',
+			items: { $dynamicRef: '#node' },
+			$defs: {
+				node: { $dynamicAnchor: 'node', type: 'string' }
+			}
 		};
 
 		const ls = getLanguageService({});
 
-		const { textDoc, jsonDoc } = toDocument(JSON.stringify({ name: 'test' }));
-		const validation = await ls.doValidation(textDoc, jsonDoc, { schemaValidation: 'warning' }, schema);
-
-		assert.strictEqual(validation.length, 1);
-		assert.ok(validation[0].message.includes('$dynamicRef'));
-		assert.ok(validation[0].message.includes('not yet supported'));
-		assert.strictEqual(validation[0].severity, DiagnosticSeverity.Warning);
-		assert.strictEqual(validation[0].code, ErrorCode.SchemaUnsupportedFeature);
+		// Valid: every item resolves through $dynamicRef to the string schema
+		{
+			const { textDoc, jsonDoc } = toDocument(JSON.stringify(['a', 'b']));
+			const validation = await ls.doValidation(textDoc, jsonDoc, { schemaValidation: 'warning' }, schema);
+			assert.strictEqual(validation.length, 0);
+		}
+		// Invalid: a non-string item violates the resolved schema
+		{
+			const { textDoc, jsonDoc } = toDocument(JSON.stringify(['a', 1]));
+			const validation = await ls.doValidation(textDoc, jsonDoc, { schemaValidation: 'warning' }, schema);
+			assert.ok(validation.length > 0);
+		}
 	});
 
-	test('schema with multiple unsupported features shows warning with all features', async function () {
+	test('schema with $dynamicRef and $dynamicAnchor together is supported', async function () {
 		const schema: JSONSchema = {
 			$schema: 'https://json-schema.org/draft/2020-12/schema',
 			$vocabulary: {
 				'https://json-schema.org/draft/2020-12/vocab/core': true
 			},
-			$dynamicAnchor: 'items',
-			$dynamicRef: '#items',
-			type: 'object'
+			type: 'array',
+			items: { $dynamicRef: '#node' },
+			$defs: {
+				node: { $dynamicAnchor: 'node', type: 'string' }
+			}
 		};
 
 		const ls = getLanguageService({});
 
-		const { textDoc, jsonDoc } = toDocument(JSON.stringify({ name: 'test' }));
+		const { textDoc, jsonDoc } = toDocument(JSON.stringify(['a', 'b']));
 		const validation = await ls.doValidation(textDoc, jsonDoc, { schemaValidation: 'warning' }, schema);
 
-		assert.strictEqual(validation.length, 1);
-		assert.ok(validation[0].message.includes('$dynamicRef'));
-		assert.ok(validation[0].message.includes('$dynamicAnchor'));
-		assert.ok(!validation[0].message.includes('$vocabulary')); // $vocabulary is now supported
-		assert.ok(validation[0].message.includes('not yet supported'));
-		assert.strictEqual(validation[0].severity, DiagnosticSeverity.Warning);
-		assert.strictEqual(validation[0].code, ErrorCode.SchemaUnsupportedFeature);
+		assert.strictEqual(validation.length, 0);
 	});
 
 	suite('Vocabulary Support (JSON Schema 2019-09+)', () => {

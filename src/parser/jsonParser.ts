@@ -471,6 +471,21 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 	// Push current schema to stack for $recursiveRef resolution
 	schemaStack.push(schema);
 
+	// 2020-12 $dynamicRef, resolved here like a plain $ref. The target was
+	// recorded during schema resolution as $dynamicRefTarget; validate the
+	// instance against it. (Dynamic-scope resolution is layered on in a later
+	// step.) This runs after the schemaRoots push so the resource that contains
+	// the $dynamicRef participates in its own resolution.
+	const dynamicRefTarget = (schema as MergedJSONSchema).$dynamicRefTarget;
+	if (dynamicRefTarget !== undefined && dynamicRefTarget !== schema) {
+		validate(node, dynamicRefTarget, validationResult, matchingSchemas, context, schemaStack, schemaRoots);
+		schemaStack.pop();
+		if (isNewRoot) {
+			schemaRoots.pop();
+		}
+		return;
+	}
+
 	const enabled = (keyword: string) => {
 		// Draft-based keyword gating: keywords only exist in certain drafts.
 		// 'dependencies' was replaced by dependentRequired/dependentSchemas in 2019-09

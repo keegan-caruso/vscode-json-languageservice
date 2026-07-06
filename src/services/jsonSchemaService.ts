@@ -505,7 +505,6 @@ export class JSONSchemaService implements IJSONSchemaService {
 			return this.promise.resolve(new ResolvedSchema({}, [toDiagnostic(l10n.t("Draft-03 schemas are not supported."), ErrorCode.SchemaUnsupportedFeature)], [], schemaDraft, undefined));
 		}
 
-		let usesUnsupportedFeatures = new Set();
 		let activeVocabularies: Vocabularies | undefined = undefined;
 
 		const extractVocabularies = (metaschema: JSONSchema): Vocabularies | undefined => {
@@ -523,6 +522,18 @@ export class JSONSchemaService implements IJSONSchemaService {
 		};
 
 		const contextService = this.contextService;
+
+		// Attach internal, non-enumerable metadata to a schema node. Hidden so it is
+		// invisible to schema traversal, merging and consumers, but available to the
+		// validator (e.g. for $recursiveRef/$dynamicRef resolution).
+		const setHidden = (obj: any, key: string, value: any): void => {
+			Object.defineProperty(obj, key, {
+				value,
+				enumerable: false,
+				writable: true,
+				configurable: true
+			});
+		};
 
 		const findSectionByJSONPointer = (schema: JSONSchema, path: string): any => {
 			path = decodeURIComponent(path);
@@ -604,6 +615,18 @@ export class JSONSchemaService implements IJSONSchemaService {
 					writable: true,
 					configurable: true
 				});
+			}
+
+			// Propagate hidden $dynamicRef metadata. When a $dynamicRef lives directly on
+			// a $ref'd schema resource, that resource is a distinct object from the
+			// referencing schema and is often resolved standalone first — deleting its
+			// $dynamicRef and recording the (non-enumerable, so not copied above) target.
+			// Carry it over so the merged schema still resolves the reference. (When the
+			// $dynamicRef lives on a child of the merged resource, that child is shared by
+			// reference and already carries its own metadata.)
+			const src = section as MergedJSONSchema;
+			if (src.$dynamicRefTarget !== undefined && (target as MergedJSONSchema).$dynamicRefTarget === undefined) {
+				setHidden(target, '$dynamicRefTarget', src.$dynamicRefTarget);
 			}
 		};
 
@@ -842,10 +865,30 @@ export class JSONSchemaService implements IJSONSchemaService {
 				}
 
 				if (schema.$dynamicRef) {
-					usesUnsupportedFeatures.add('$dynamicRef');
-				}
-				if (schema.$dynamicAnchor) {
-					usesUnsupportedFeatures.add('$dynamicAnchor');
+					// 2020-12 $dynamicRef, resolved here as a plain $ref: its target is
+					// resolved statically (against the reference's own base URI) and kept
+					// as hidden metadata ($dynamicRefTarget) instead of being merged into
+					// `schema`, so `schema`'s own sibling keywords are preserved. The
+					// validator then validates the instance against that target. (True
+					// dynamic-scope resolution is layered on top of this in a later step.)
+					const ref = schema.$dynamicRef;
+					const segments = ref.split('#', 2);
+					delete schema.$dynamicRef;
+
+					if (segments[0].length > 0) {
+						// External / relative reference: resolve the target document into a
+						// throwaway container so `schema`'s own keywords are preserved.
+						const target: JSONSchema = {};
+						setHidden(schema, '$dynamicRefTarget', target);
+						const refBase = (newBase === schema) ? currentBaseHandle : newBaseHandle;
+						openPromises.push(resolveExternalLink(target, segments[0], segments[1], refBase));
+					} else {
+						// Internal reference: resolve like a plain $ref against the current
+						// base into a throwaway container.
+						const container: JSONSchema = {};
+						mergeRef(container, newBase, newBaseHandle, segments[1]);
+						setHidden(schema, '$dynamicRefTarget', container);
+					}
 				}
 
 				// Continue traversing child schemas with the potentially updated base
@@ -881,16 +924,23 @@ export class JSONSchemaService implements IJSONSchemaService {
 				// Collect anchor from this node
 				// In draft-04/06/07, anchors are defined via $id/#fragment (e.g., "$id": "#myanchor")
 				// In 2019-09+, $id fragments are no longer anchors; $anchor is used instead
+				// In 2020-12, $dynamicAnchor also defines a plain-name fragment that a
+				// (static) $ref can resolve to, just like $anchor.
 				const fragmentAnchor = (draft === undefined || draft < SchemaDraft.v2019_09) && isString(id) && id.charAt(0) === '#' ? id.substring(1) : undefined;
 				const dollarAnchor = (draft === undefined || draft >= SchemaDraft.v2019_09) ? node.$anchor : undefined;
-				const anchor = fragmentAnchor ?? dollarAnchor;
-				if (anchor) {
-					if (result.has(anchor)) {
+				const dynamicAnchor = (draft === undefined || draft >= SchemaDraft.v2020_12) ? node.$dynamicAnchor : undefined;
+				const registerAnchor = (anchor: string | undefined) => {
+					if (!anchor) {
+						return;
+					}
+					if (result.has(anchor) && result.get(anchor) !== node) {
 						resolveErrors.push(toDiagnostic(l10n.t('Duplicate anchor declaration: \'{0}\'', anchor), ErrorCode.SchemaResolveError));
 					} else {
 						result.set(anchor, node);
 					}
-				}
+				};
+				registerAnchor(fragmentAnchor ?? dollarAnchor);
+				registerAnchor(dynamicAnchor);
 
 				// Continue traversing child schemas
 				JSONSchemaService.traverseSchemaProperties(node, (childSchema) => {
@@ -952,6 +1002,8 @@ export class JSONSchemaService implements IJSONSchemaService {
 		// Collect anchors eagerly before $ref resolution mutates the schema.
 		// resolveRefs merges referenced nodes (including $anchor) into $ref targets,
 		// so a lazy collectAnchors call could see duplicates from merged copies.
+		// $dynamicAnchor names are registered as ordinary anchors here (see
+		// collectAnchors), so a $dynamicRef resolves to them like a plain $ref.
 		handle.anchors = collectAnchors(schema);
 
 		// Resolve meta-schema to extract vocabularies if present
@@ -986,11 +1038,7 @@ export class JSONSchemaService implements IJSONSchemaService {
 
 		return resolveMetaschemaVocabularies().then(() => {
 			return resolveRefs(schema, schema, handle).then(_ => {
-				let resolveWarnings: SchemaDiagnostic[] = [];
-				if (usesUnsupportedFeatures.size) {
-					resolveWarnings.push(toDiagnostic(l10n.t('The schema uses meta-schema features ({0}) that are not yet supported by the validator.', Array.from(usesUnsupportedFeatures.keys()).join(', ')), ErrorCode.SchemaUnsupportedFeature));
-				}
-				return new ResolvedSchema(schema, resolveErrors, resolveWarnings, schemaDraft, activeVocabularies);
+				return new ResolvedSchema(schema, resolveErrors, [], schemaDraft, activeVocabularies);
 			});
 		});
 	};

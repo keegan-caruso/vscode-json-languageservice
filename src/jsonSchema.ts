@@ -105,4 +105,14 @@ export interface JSONSchemaMap {
  */
 export interface MergedJSONSchema extends JSONSchema {
 	$originalId?: string;
+
+	/**
+	 * Non-enumerable metadata attached while resolving a `$dynamicRef`.
+	 *
+	 * `$dynamicRefTarget` is the statically resolved initial target (resolved
+	 * like a plain `$ref`, against the reference's own base URI). The validator
+	 * validates the instance against it, so a `$dynamicRef` behaves like a plain
+	 * `$ref` to the location it initially points at.
+	 */
+	$dynamicRefTarget?: JSONSchema;
 }
