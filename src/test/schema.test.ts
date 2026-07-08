@@ -2610,6 +2610,124 @@ suite('JSON Schema', () => {
 		}
 	});
 
+	test('$dynamicRef override resolves across external documents', async function () {
+		// Like the override test above, but the extending resource that carries the
+		// stricter $dynamicAnchor lives in a *separate* document from the one being
+		// validated. The dynamic scope must reach into the external "strict" document
+		// so its $dynamicAnchor overrides the base default.
+		const base: JSONSchema = {
+			$id: 'https://example.com/x-base',
+			$schema: 'https://json-schema.org/draft/2020-12/schema',
+			type: 'object',
+			properties: {
+				elements: { type: 'array', items: { $dynamicRef: '#elements' } }
+			},
+			required: ['elements'],
+			$defs: {
+				elements: { $dynamicAnchor: 'elements' }
+			}
+		};
+		const strict: JSONSchema = {
+			$id: 'https://example.com/x-strict',
+			$schema: 'https://json-schema.org/draft/2020-12/schema',
+			$ref: 'https://example.com/x-base',
+			$defs: {
+				elements: {
+					$dynamicAnchor: 'elements',
+					type: 'object',
+					properties: { a: { type: 'integer' } },
+					required: ['a'],
+					additionalProperties: false
+				}
+			}
+		};
+		const makeLs = () => getLanguageService({
+			schemaRequestService: newMockRequestService({
+				'https://example.com/x-base': base,
+				'https://example.com/x-strict': strict
+			}),
+			workspaceContext
+		});
+
+		// The validated document is neither base nor strict: it only references strict.
+		// A fresh service *and* a fresh consumer per case: the cross-document dynamic
+		// scope must be established by resolution alone, not leaked from a previous
+		// validation (in-place $ref resolution mutates the schema object it is given).
+		const makeConsumer = (): JSONSchema => ({
+			$schema: 'https://json-schema.org/draft/2020-12/schema',
+			$ref: 'https://example.com/x-strict'
+		});
+
+		{
+			const { textDoc, jsonDoc } = toDocument(JSON.stringify({ elements: [{ a: 1 }] }));
+			const v = await makeLs().doValidation(textDoc, jsonDoc, { schemaValidation: 'warning' }, makeConsumer());
+			assert.strictEqual(v.length, 0, 'strict element should be valid through external override: ' + JSON.stringify(v));
+		}
+		{
+			const { textDoc, jsonDoc } = toDocument(JSON.stringify({ elements: [{ b: 1 }] }));
+			const v = await makeLs().doValidation(textDoc, jsonDoc, { schemaValidation: 'warning' }, makeConsumer());
+			assert.ok(v.length > 0, 'external override should reject an element missing "a"');
+		}
+	});
+
+	test('$dynamicRef with a non-fragment URI starting point participates in the external dynamic scope', async function () {
+		// The $dynamicRef uses a non-fragment URI ("y-defs#T"): its starting point is
+		// resolved in another document, and the $dynamicAnchor that overrides it lives
+		// in a third document. Exercises both the external starting-point path and
+		// cross-document dynamic-scope resolution.
+		const defs: JSONSchema = {
+			$id: 'https://example.com/y-defs',
+			$schema: 'https://json-schema.org/draft/2020-12/schema',
+			$defs: {
+				T: { $dynamicAnchor: 'T', type: 'number' }
+			}
+		};
+		const base: JSONSchema = {
+			$id: 'https://example.com/y-base',
+			$schema: 'https://json-schema.org/draft/2020-12/schema',
+			type: 'object',
+			required: ['val'],
+			properties: {
+				val: { $dynamicRef: 'https://example.com/y-defs#T' }
+			}
+		};
+		const strict: JSONSchema = {
+			$id: 'https://example.com/y-strict',
+			$schema: 'https://json-schema.org/draft/2020-12/schema',
+			$ref: 'https://example.com/y-base',
+			$defs: {
+				T: { $dynamicAnchor: 'T', type: 'integer' }
+			}
+		};
+		const makeLs = () => getLanguageService({
+			schemaRequestService: newMockRequestService({
+				'https://example.com/y-defs': defs,
+				'https://example.com/y-base': base,
+				'https://example.com/y-strict': strict
+			}),
+			workspaceContext
+		});
+		// A fresh service *and* a fresh consumer per case: the external override must be
+		// established by resolution, not leaked from a previous validation (in-place
+		// $ref resolution mutates the schema object it is given).
+		const makeConsumer = (): JSONSchema => ({
+			$schema: 'https://json-schema.org/draft/2020-12/schema',
+			$ref: 'https://example.com/y-strict'
+		});
+
+		{
+			const { textDoc, jsonDoc } = toDocument(JSON.stringify({ val: 1 }));
+			const v = await makeLs().doValidation(textDoc, jsonDoc, { schemaValidation: 'warning' }, makeConsumer());
+			assert.strictEqual(v.length, 0, 'integer should satisfy the external override: ' + JSON.stringify(v));
+		}
+		{
+			// 1.5 is a valid number (the base default) but not an integer (the override).
+			const { textDoc, jsonDoc } = toDocument(JSON.stringify({ val: 1.5 }));
+			const v = await makeLs().doValidation(textDoc, jsonDoc, { schemaValidation: 'warning' }, makeConsumer());
+			assert.ok(v.length > 0, 'external override (integer) should reject a non-integer number');
+		}
+	});
+
 	test('$dynamicRef to an $anchor (not a $dynamicAnchor) behaves like a plain $ref', async function () {
 		// #foo resolves to a plain $anchor, which is not "bookended" (its target is
 		// not a $dynamicAnchor of that name), so there is no dynamic-scope walk and

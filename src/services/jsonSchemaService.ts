@@ -641,6 +641,31 @@ export class JSONSchemaService implements IJSONSchemaService {
 			if (src.$dynamicRefInfo !== undefined && dst.$dynamicRefInfo === undefined) {
 				setHidden(target, '$dynamicRefInfo', src.$dynamicRefInfo);
 			}
+
+			// When the merged section is itself a schema resource (it carries anchor
+			// maps), fold its $dynamicAnchor / $anchor maps into the target's. The
+			// merged node stands in for that resource during validation (it becomes a
+			// dynamic-scope root via $originalId), so those anchors must participate in
+			// dynamic-scope resolution — this is what lets a $dynamicAnchor defined in
+			// an external (or $ref'd sub-) resource override a base default. Existing
+			// entries are kept so the outermost resource retains precedence.
+			if (src.$anchorMaps !== undefined) {
+				let maps = dst.$anchorMaps;
+				if (maps === undefined) {
+					maps = { dynamic: new Map<string, JSONSchema>(), local: new Map<string, JSONSchema>() };
+					setHidden(target, '$anchorMaps', maps);
+				}
+				for (const [name, node] of src.$anchorMaps.dynamic) {
+					if (!maps.dynamic.has(name)) {
+						maps.dynamic.set(name, node);
+					}
+				}
+				for (const [name, node] of src.$anchorMaps.local) {
+					if (!maps.local.has(name)) {
+						maps.local.set(name, node);
+					}
+				}
+			}
 		};
 
 		type SchemaKeyword = keyof JSONSchema;
@@ -805,6 +830,14 @@ export class JSONSchemaService implements IJSONSchemaService {
 					const loc = refSegment ? uri + '#' + refSegment : uri;
 					const errorMessage = refSegment ? l10n.t('Problems loading reference \'{0}\': {1}', refSegment, error.message) : error.message;
 					resolveErrors.push(toDiagnostic(errorMessage, error.code, uri));
+				}
+				// 2020-12: collect the referenced document's own resource anchor maps
+				// (once) before merging, so its $dynamicAnchor declarations can join the
+				// dynamic scope and its $dynamicRef nodes get their lexical resource
+				// recorded — mirroring what is done eagerly for the root document, before
+				// $ref merging flattens resource boundaries.
+				if ((unresolvedSchema.schema as MergedJSONSchema).$anchorMaps === undefined) {
+					collectDynamicAnchors(unresolvedSchema.schema);
 				}
 				mergeRef(node, unresolvedSchema.schema, referencedHandle, refSegment);
 				return resolveRefs(node, unresolvedSchema.schema, referencedHandle);
@@ -1009,7 +1042,11 @@ export class JSONSchemaService implements IJSONSchemaService {
 		// resolution merges (and thereby flattens) resource boundaries; node identities
 		// are preserved through in-place resolution, so the attached metadata stays valid.
 		const collectDynamicAnchors = (root: JSONSchema): void => {
-			if (!(schemaDraft === undefined || schemaDraft >= SchemaDraft.v2020_12)) {
+			// Respect the resource's own $schema (like collectAnchors) so a referenced
+			// document with a different, pre-2020-12 dialect is not given $dynamicAnchor
+			// semantics just because the root document is 2020-12.
+			const draft = root && typeof root === 'object' && root.$schema ? getSchemaDraftFromId(root.$schema) : schemaDraft;
+			if (!(draft === undefined || draft >= SchemaDraft.v2020_12)) {
 				return;
 			}
 			const seen = new Set<JSONSchema>();
