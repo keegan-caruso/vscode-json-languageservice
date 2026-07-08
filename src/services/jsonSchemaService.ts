@@ -279,10 +279,16 @@ export class JSONSchemaService implements IJSONSchemaService {
 	private promiseConstructor: PromiseConstructor;
 
 	private static traverseSchemaProperties(node: JSONSchema, callback: (schema: JSONSchema) => void): void {
-		const singleSchemaProps = ['additionalItems', 'additionalProperties', 'not', 'contains',
-			'propertyNames', 'if', 'then', 'else', 'unevaluatedItems', 'unevaluatedProperties', 'items'] as const;
+		// `$defs`/`definitions` are visited first so that a reusable resource they
+		// contain (which may itself carry a `$ref` chain) begins resolving before an
+		// `if`/`then`/`else`/`items`/… sibling references it. During asynchronous
+		// `$ref` resolution the referenced resource must be fully assembled before a
+		// referrer merges it, otherwise the referrer captures a half-resolved snapshot
+		// (e.g. a `$dynamicRef` chain reached through `then: { $ref: "numberList" }`).
 		const schemaMapProps = ['definitions', '$defs', 'properties', 'patternProperties',
 			'dependencies', 'dependentSchemas'] as const;
+		const singleSchemaProps = ['additionalItems', 'additionalProperties', 'not', 'contains',
+			'propertyNames', 'if', 'then', 'else', 'unevaluatedItems', 'unevaluatedProperties', 'items'] as const;
 		const schemaArrayProps = ['anyOf', 'allOf', 'oneOf', 'prefixItems'] as const;
 
 		const visitValue = (value: JSONSchemaRef | JSONSchemaRef[]): void => {
@@ -295,17 +301,17 @@ export class JSONSchemaService implements IJSONSchemaService {
 			}
 		};
 
-		for (const prop of singleSchemaProps) {
-			const propValue = node[prop];
-			if (propValue) {
-				visitValue(propValue);
-			}
-		}
-
 		for (const prop of schemaMapProps) {
 			const map = node[prop];
 			if (map && typeof map === 'object') {
 				Object.values(map).forEach(visitValue);
+			}
+		}
+
+		for (const prop of singleSchemaProps) {
+			const propValue = node[prop];
+			if (propValue) {
+				visitValue(propValue);
 			}
 		}
 
@@ -500,6 +506,10 @@ export class JSONSchemaService implements IJSONSchemaService {
 		const resolveErrors: SchemaDiagnostic[] = schemaToResolve.errors.slice(0);
 		const schema = schemaToResolve.schema;
 
+		// External documents whose embedded $id resources have already been registered
+		// as resolvable handles, so we only do it once per referenced document.
+		const embeddedRegisteredFor = new Set<string>();
+
 		const schemaDraft = schema.$schema ? getSchemaDraftFromId(schema.$schema) : undefined;
 		if (schemaDraft === SchemaDraft.v3) {
 			return this.promise.resolve(new ResolvedSchema({}, [toDiagnostic(l10n.t("Draft-03 schemas are not supported."), ErrorCode.SchemaUnsupportedFeature)], [], schemaDraft, undefined));
@@ -556,7 +566,9 @@ export class JSONSchemaService implements IJSONSchemaService {
 			path.split('/').some((part) => {
 				part = part.replace(/~1/g, '/').replace(/~0/g, '~');
 				current = current[part];
-				return !current;
+				// A boolean `false` is a valid schema, not a "missing" section, so only
+				// stop on genuinely absent values (undefined/null).
+				return current === undefined || current === null;
 			});
 			return current;
 		};
@@ -575,7 +587,9 @@ export class JSONSchemaService implements IJSONSchemaService {
 			path.split('/').some((part) => {
 				part = part.replace(/~1/g, '/').replace(/~0/g, '~');
 				current = current[part];
-				if (!current) {
+				// A boolean `false` is a valid schema, not a "missing" section, so only
+				// stop on genuinely absent values (undefined/null).
+				if (current === undefined || current === null) {
 					return true;
 				}
 				const id = getSchemaId(current);
@@ -600,6 +614,30 @@ export class JSONSchemaService implements IJSONSchemaService {
 		};
 
 		const getSchemaId = (schema: JSONSchema): string | undefined => schema.$id || schema.id;
+
+		// Fold a source resource's $dynamicAnchor names into a target node's dynamic
+		// map, creating it on demand. Existing entries win, so the outermost resource
+		// in a dynamic scope retains precedence — this is what lets a $dynamicAnchor in
+		// an outer resource override an inner (referenced) one during the validation
+		// walk. Only the `dynamic` map is folded: the `local` map must stay per-resource
+		// (it resolves an internal $dynamicRef's initial target within its own lexical
+		// resource), so a sibling/referenced resource's identically-named anchor must
+		// not leak into it.
+		const unionAnchorMaps = (target: MergedJSONSchema, srcMaps: AnchorMaps | undefined): void => {
+			if (srcMaps === undefined) {
+				return;
+			}
+			let maps = target.$anchorMaps;
+			if (maps === undefined) {
+				maps = { dynamic: new Map<string, JSONSchema>(), local: new Map<string, JSONSchema>() };
+				setHidden(target, '$anchorMaps', maps);
+			}
+			for (const [name, node] of srcMaps.dynamic) {
+				if (!maps.dynamic.has(name)) {
+					maps.dynamic.set(name, node);
+				}
+			}
+		};
 
 		const merge = (target: MergedJSONSchema, section: any): void => {
 			for (const key in section) {
@@ -649,23 +687,7 @@ export class JSONSchemaService implements IJSONSchemaService {
 			// dynamic-scope resolution — this is what lets a $dynamicAnchor defined in
 			// an external (or $ref'd sub-) resource override a base default. Existing
 			// entries are kept so the outermost resource retains precedence.
-			if (src.$anchorMaps !== undefined) {
-				let maps = dst.$anchorMaps;
-				if (maps === undefined) {
-					maps = { dynamic: new Map<string, JSONSchema>(), local: new Map<string, JSONSchema>() };
-					setHidden(target, '$anchorMaps', maps);
-				}
-				for (const [name, node] of src.$anchorMaps.dynamic) {
-					if (!maps.dynamic.has(name)) {
-						maps.dynamic.set(name, node);
-					}
-				}
-				for (const [name, node] of src.$anchorMaps.local) {
-					if (!maps.local.has(name)) {
-						maps.local.set(name, node);
-					}
-				}
-			}
+			unionAnchorMaps(dst, src.$anchorMaps);
 		};
 
 		type SchemaKeyword = keyof JSONSchema;
@@ -699,6 +721,7 @@ export class JSONSchemaService implements IJSONSchemaService {
 		];
 		const containsBoundKeywords: readonly SchemaKeyword[] = ['minContains', 'maxContains'];
 		const conditionalBranchKeywords: readonly SchemaKeyword[] = ['then', 'else'];
+		const arrayApplicatorKeywords: readonly SchemaKeyword[] = ['items', 'prefixItems', 'additionalItems'];
 		const uses2020_12ArrayAnnotations = schemaDraft === undefined || schemaDraft >= SchemaDraft.v2020_12;
 
 		// Some keywords only make sense relative to adjacent keywords in the same schema object.
@@ -725,7 +748,26 @@ export class JSONSchemaService implements IJSONSchemaService {
 				return true;
 			}
 
+			// Reverse of the above: the *referencing* schema declares unevaluatedItems
+			// while the referenced schema constrains items positionally and may contain
+			// internal self-references (`$ref: "#"`). Flattening would pull the referenced
+			// items into the referencing scope, so those self-references would inherit the
+			// referencing unevaluatedItems. Isolate so the referenced resource keeps its
+			// own annotation scope.
+			if (hasKeyword(referencingSchema, 'unevaluatedItems') && hasAnyKeyword(referencedSchema, arrayApplicatorKeywords)) {
+				return true;
+			}
+
 			if (hasKeyword(referencedSchema, 'contains') && hasAnyKeyword(referencingSchema, containsBoundKeywords)) {
+				return true;
+			}
+
+			// Both the referenced and referencing schemas constrain array items
+			// (tuple `items`, or 2020-12 `items`/`prefixItems`). A flatten-merge can
+			// only keep one `items`, silently dropping the other; isolate into an
+			// allOf so both position constraints apply and item-evaluation
+			// annotations (for unevaluatedItems) accumulate across both.
+			if (Array.isArray(referencedSchema.items) && Array.isArray(referencingSchema.items)) {
 				return true;
 			}
 
@@ -759,6 +801,12 @@ export class JSONSchemaService implements IJSONSchemaService {
 				// A $ref to a sub-schema with an $id (i.e #hello)
 				section = findSchemaById(sourceRoot, sourceHandle, refSegment);
 			}
+			// A boolean is a valid JSON Schema: `true` accepts everything ({}) and
+			// `false` rejects everything ({ not: {} }). Normalize so it merges like any
+			// other schema (and isn't mistaken for an unresolved section below).
+			if (typeof section === 'boolean') {
+				section = section ? {} : { not: {} };
+			}
 			if (section) {
 				// If the found section contains a $ref that needs to be resolved
 				// relative to a different base (e.g. it's inside a schema with $id),
@@ -776,6 +824,16 @@ export class JSONSchemaService implements IJSONSchemaService {
 					}
 				}
 				const reservedKeys = new Set(['$ref', '$defs', 'definitions', '$schema', '$id', 'id']);
+				// Keywords that must stay on the wrapper rather than move into the allOf
+				// sibling. Scope-anchor keywords ($recursiveAnchor/$dynamicAnchor) keep this
+				// resource discoverable as a $recursiveRef/$dynamicRef bookending target.
+				// The unevaluated* annotations must observe the results of *all* in-place
+				// applicators (including the $ref'd schema in allOf[0]); leaving them on the
+				// wrapper lets them see the aggregated annotations rather than only the
+				// sibling's own evaluations.
+				const keepOnWrapperKeys = new Set([
+					'$recursiveAnchor', '$dynamicAnchor', 'unevaluatedItems', 'unevaluatedProperties'
+				]);
 
 				// In JSON Schema draft-04 through draft-07, $ref completely overrides any sibling keywords.
 				// Starting in 2019-09, sibling keywords are processed alongside $ref.
@@ -797,9 +855,10 @@ export class JSONSchemaService implements IJSONSchemaService {
 					const siblingSchema: JSONSchema = {};
 					const refSchema = { ...section };
 
-					// Move all existing properties from target to siblingSchema
+					// Move all existing properties from target to siblingSchema, except
+					// keywords that must remain on the wrapper resource.
 					for (const key in target) {
-						if (target.hasOwnProperty(key) && !reservedKeys.has(key)) {
+						if (target.hasOwnProperty(key) && !reservedKeys.has(key) && !keepOnWrapperKeys.has(key)) {
 							const k = key as keyof JSONSchema;
 							siblingSchema[k] = target[k] as any;
 							delete target[k];
@@ -831,6 +890,15 @@ export class JSONSchemaService implements IJSONSchemaService {
 					const errorMessage = refSegment ? l10n.t('Problems loading reference \'{0}\': {1}', refSegment, error.message) : error.message;
 					resolveErrors.push(toDiagnostic(errorMessage, error.code, uri));
 				}
+				// A referenced document may itself embed subschemas with their own
+				// absolute $id. Register those as resolvable handles (once per document)
+				// so a nested $ref by that $id resolves to the embedded resource instead
+				// of being (mis)loaded as a standalone document. registerEmbeddedSchemas
+				// only runs for the root document otherwise.
+				if (!embeddedRegisteredFor.has(uri)) {
+					embeddedRegisteredFor.add(uri);
+					registerEmbeddedSchemas(unresolvedSchema.schema, uri);
+				}
 				// 2020-12: collect the referenced document's own resource anchor maps
 				// (once) before merging, so its $dynamicAnchor declarations can join the
 				// dynamic scope and its $dynamicRef nodes get their lexical resource
@@ -840,6 +908,12 @@ export class JSONSchemaService implements IJSONSchemaService {
 					collectDynamicAnchors(unresolvedSchema.schema);
 				}
 				mergeRef(node, unresolvedSchema.schema, referencedHandle, refSegment);
+				// Referencing a fragment of another resource (e.g. "other#/$defs/x")
+				// still *enters* that resource's dynamic scope, so its $dynamicAnchor
+				// declarations must join `node`'s scope even though only the sub-schema
+				// was merged. (For a whole-document ref the merge above already did this,
+				// since the merged section is the resource root; this is a no-op then.)
+				unionAnchorMaps(node as MergedJSONSchema, (unresolvedSchema.schema as MergedJSONSchema).$anchorMaps);
 				return resolveRefs(node, unresolvedSchema.schema, referencedHandle);
 			});
 		};

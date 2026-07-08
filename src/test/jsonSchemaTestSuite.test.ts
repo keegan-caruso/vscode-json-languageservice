@@ -198,6 +198,5 @@ function initializeTests() {
 
 	});
 }
-const skippedTests = new Set<string>([
-]);
+const skippedTests = new Set<string>([]);
 initializeTests();

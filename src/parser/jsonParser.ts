@@ -455,10 +455,11 @@ function validate(n: ASTNode | undefined, schema: JSONSchema, validationResult: 
 			? schemaStack.find(hasRecursiveAnchor)
 			: currentResourceRoot ?? schemaRoots[0];
 
-		// Validate against the target schema (avoiding infinite loop)
+		// Validate against the target schema (avoiding infinite loop).
+		// Fall through afterwards so sibling keywords (e.g. unevaluatedProperties)
+		// are still evaluated against this node, accumulating processedProperties.
 		if (targetSchema && targetSchema !== schema) {
 			validate(node, targetSchema, validationResult, matchingSchemas, context, schemaStack, schemaRoots);
-			return;
 		}
 	}
 
