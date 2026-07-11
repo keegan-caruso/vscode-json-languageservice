@@ -22,6 +22,28 @@ function toDocument(text: string, config?: Parser.JSONDocumentConfig, uri = 'foo
 	return { textDoc, jsonDoc };
 }
 
+function getMessageText(message: unknown): string {
+	if (typeof message === 'string') {
+		return message;
+	}
+	if (message && typeof message === 'object' && 'value' in message && typeof (message as { value: unknown }).value === 'string') {
+		return (message as { value: string }).value;
+	}
+	return String(message);
+}
+
+function messageContains(message: unknown, expected: string): boolean {
+	return getMessageText(message).includes(expected);
+}
+
+function assertInMessage(message: unknown, expected: string, assertionMessage?: string): void {
+	assert.ok(messageContains(message, expected), assertionMessage);
+}
+
+function assertNotInMessage(message: unknown, expected: string, assertionMessage?: string): void {
+	assert.ok(!messageContains(message, expected), assertionMessage);
+}
+
 suite('JSON Schema', () => {
 
 	const fixureDocuments: { [uri: string]: string } = {
@@ -2845,7 +2867,7 @@ suite('JSON Schema', () => {
 			const { textDoc: invalidDoc, jsonDoc: invalidJsonDoc } = toDocument('5');
 			const invalidValidation = await ls.doValidation(invalidDoc, invalidJsonDoc, {}, schema);
 			assert.strictEqual(invalidValidation.length, 1);
-			assert.ok(invalidValidation[0].message.includes('minimum'));
+			assertInMessage(invalidValidation[0].message, 'minimum');
 		});
 
 		test('meta-schema with only applicator vocabulary should ignore validation keywords', async function () {
@@ -2912,7 +2934,7 @@ suite('JSON Schema', () => {
 			const { textDoc, jsonDoc } = toDocument('5');
 			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
 			assert.strictEqual(validation.length, 1);
-			assert.ok(validation[0].message.includes('minimum'));
+			assertInMessage(validation[0].message, 'minimum');
 		});
 
 		test('applicator keywords work when validation vocabulary is disabled', async function () {
@@ -2964,7 +2986,7 @@ suite('JSON Schema', () => {
 			const { textDoc, jsonDoc } = toDocument('5');
 			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
 			assert.strictEqual(validation.length, 1);
-			assert.ok(validation[0].message.includes('minimum'), 'Draft-06 schemas should process all keywords');
+			assertInMessage(validation[0].message, 'minimum', 'Draft-06 schemas should process all keywords');
 		});
 
 		test('draft-07 schemas should not use vocabulary filtering', async function () {
@@ -2981,7 +3003,7 @@ suite('JSON Schema', () => {
 			const { textDoc, jsonDoc } = toDocument('5');
 			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
 			assert.strictEqual(validation.length, 1);
-			assert.ok(validation[0].message.includes('minimum'), 'Draft-07 schemas should process all keywords');
+			assertInMessage(validation[0].message, 'minimum', 'Draft-07 schemas should process all keywords');
 		});
 
 		test('meta-schema without $vocabulary should process all keywords', async function () {
@@ -3010,7 +3032,7 @@ suite('JSON Schema', () => {
 			const { textDoc, jsonDoc } = toDocument('5');
 			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
 			assert.strictEqual(validation.length, 1);
-			assert.ok(validation[0].message.includes('minimum'), 'Schemas using metaschemas without $vocabulary should process all keywords');
+			assertInMessage(validation[0].message, 'minimum', 'Schemas using metaschemas without $vocabulary should process all keywords');
 		});
 
 		test('vocabularies with required=false should still be processed', async function () {
@@ -3042,7 +3064,7 @@ suite('JSON Schema', () => {
 			const { textDoc, jsonDoc } = toDocument('5');
 			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
 			assert.strictEqual(validation.length, 1);
-			assert.ok(validation[0].message.includes('minimum'), 'Optional (required=false) vocabularies should still be processed');
+			assertInMessage(validation[0].message, 'minimum', 'Optional (required=false) vocabularies should still be processed');
 		});
 
 		test('format-annotation vocabulary should not produce validation errors', async function () {
@@ -3107,7 +3129,7 @@ suite('JSON Schema', () => {
 			const { textDoc, jsonDoc } = toDocument('"not-an-email"');
 			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
 			assert.strictEqual(validation.length, 1, 'format-assertion vocabulary should produce validation errors');
-			assert.ok(validation[0].message.toLowerCase().includes('e-mail'), 'Error should mention e-mail format');
+			assertInMessage(getMessageText(validation[0].message).toLowerCase(), 'e-mail', 'Error should mention e-mail format');
 		});
 
 		test('2019-09 optional format vocabulary should be annotation-only (no errors)', async function () {
@@ -3185,7 +3207,7 @@ suite('JSON Schema', () => {
 			const { textDoc, jsonDoc } = toDocument('"not-an-email"');
 			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
 			assert.strictEqual(validation.length, 1, 'Format should be validated when no vocabulary constraints exist');
-			assert.ok(validation[0].message.toLowerCase().includes('e-mail'), 'Error should mention e-mail format');
+			assertInMessage(getMessageText(validation[0].message).toLowerCase(), 'e-mail', 'Error should mention e-mail format');
 		});
 
 		test('format should not validate by default for 2019-09 schemas', async function () {
@@ -3228,7 +3250,7 @@ suite('JSON Schema', () => {
 			const { textDoc, jsonDoc } = toDocument('"not-an-email"');
 			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
 			assert.strictEqual(validation.length, 1, 'Format should validate for draft-07');
-			assert.ok(validation[0].message.toLowerCase().includes('e-mail'), 'Error should mention e-mail format');
+			assertInMessage(getMessageText(validation[0].message).toLowerCase(), 'e-mail', 'Error should mention e-mail format');
 		});
 
 		test('vocabulary-disable: custom dialect disabling validation vocab with $ref to standard schema', async function () {
@@ -3271,14 +3293,14 @@ suite('JSON Schema', () => {
 			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
 
 			// Validation keywords (required, type, minimum) should be ignored
-			const requiredErrors = validation.filter(v => v.message.includes('name'));
+			const requiredErrors = validation.filter(v => messageContains(v.message, 'name'));
 			assert.strictEqual(requiredErrors.length, 0, '"required" should be ignored when validation vocab is disabled');
 
-			const minimumErrors = validation.filter(v => v.message.includes('minimum'));
+			const minimumErrors = validation.filter(v => messageContains(v.message, 'minimum'));
 			assert.strictEqual(minimumErrors.length, 0, '"minimum" should be ignored when validation vocab is disabled');
 
 			// Applicator keyword (false subschema) should still work
-			const fooErrors = validation.filter(v => v.message.includes('not allowed') || v.message.includes('foo'));
+			const fooErrors = validation.filter(v => messageContains(v.message, 'not allowed') || messageContains(v.message, 'foo'));
 			assert.ok(fooErrors.length > 0, '"false" subschema should still produce an error (applicator vocab is active)');
 		});
 
@@ -3326,14 +3348,14 @@ suite('JSON Schema', () => {
 			const validation = await ls.doValidation(textDoc, jsonDoc);
 
 			// Validation keywords (required, type, minimum) should be ignored
-			const requiredErrors = validation.filter(v => v.message.includes('name'));
+			const requiredErrors = validation.filter(v => messageContains(v.message, 'name'));
 			assert.strictEqual(requiredErrors.length, 0, '"required" should be ignored with relative dialect URI');
 
-			const minimumErrors = validation.filter(v => v.message.includes('minimum'));
+			const minimumErrors = validation.filter(v => messageContains(v.message, 'minimum'));
 			assert.strictEqual(minimumErrors.length, 0, '"minimum" should be ignored with relative dialect URI');
 
 			// Applicator keyword (false subschema) should still work
-			const fooErrors = validation.filter(v => v.message.includes('not allowed') || v.message.includes('foo'));
+			const fooErrors = validation.filter(v => messageContains(v.message, 'not allowed') || messageContains(v.message, 'foo'));
 			assert.ok(fooErrors.length > 0, '"false" subschema should still produce an error with relative dialect URI');
 		});
 
@@ -3377,7 +3399,7 @@ suite('JSON Schema', () => {
 			// Required 2019-09 format vocab enables format assertion for supported formats.
 			const { textDoc, jsonDoc } = toDocument('{ "subject": "not-a-date" }');
 			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
-			const formatErrors = validation.filter(v => v.message.includes('date') || v.message.includes('RFC3339'));
+			const formatErrors = validation.filter(v => messageContains(v.message, 'date') || messageContains(v.message, 'RFC3339'));
 			assert.strictEqual(formatErrors.length, 1, 'Required 2019-09 format vocab should produce format errors');
 		});
 	});
@@ -3508,7 +3530,7 @@ suite('JSON Schema', () => {
 			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
 
 			assert.strictEqual(validation.length, 1);
-			assert.ok(validation[0].message.includes('Property foo is not allowed.'));
+			assertInMessage(validation[0].message, 'Property foo is not allowed.');
 		});
 
 		test('referenced additionalItems should not pair with sibling tuple items', async function () {
@@ -3557,7 +3579,7 @@ suite('JSON Schema', () => {
 			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
 
 			assert.strictEqual(validation.length, 1);
-			assert.ok(validation[0].message.includes('Item does not match any validation rule from the array.'));
+			assertInMessage(validation[0].message, 'Item does not match any validation rule from the array.');
 		});
 
 		test('$ref siblings should be ignored in draft-07', async function () {
@@ -3654,7 +3676,7 @@ suite('JSON Schema', () => {
 			// which matches the embedded $id: "schemas/foo" (also resolved to http://example.com/schemas/foo)
 			// The embedded schema requires type: string, so 42 should fail
 			assert.strictEqual(validation.length, 1, '$ref should resolve relative $id');
-			assert.ok(validation[0].message.includes('string'), 'Error should be a type mismatch for string');
+			assertInMessage(validation[0].message, 'string', 'Error should be a type mismatch for string');
 		});
 
 		test('$ref resolves relative to the nearest $id base', async function () {
@@ -3690,7 +3712,7 @@ suite('JSON Schema', () => {
 			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
 			// bar.json requires number, "hello" is a string, should produce a type error
 			assert.strictEqual(validation.length, 1, '$ref should resolve relative to nearest $id base');
-			assert.ok(validation[0].message.includes('number'), 'Error should be a type mismatch for number');
+			assertInMessage(validation[0].message, 'number', 'Error should be a type mismatch for number');
 		});
 
 		test('$ref to a relative $id with a different path', async function () {
@@ -3720,7 +3742,7 @@ suite('JSON Schema', () => {
 			const { textDoc, jsonDoc } = toDocument('{ "home": {} }');
 			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
 			assert.strictEqual(validation.length, 1, '$ref to relative $id should resolve');
-			assert.ok(validation[0].message.includes('street'), 'Error should mention missing "street" property');
+			assertInMessage(validation[0].message, 'street', 'Error should mention missing "street" property');
 		});
 
 		test('$ref to a relative $id in draft-07 with definitions', async function () {
@@ -3743,7 +3765,7 @@ suite('JSON Schema', () => {
 			const { textDoc, jsonDoc } = toDocument('42');
 			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
 			assert.strictEqual(validation.length, 1, 'draft-07: $ref should resolve relative $id');
-			assert.ok(validation[0].message.includes('string'), 'Error should be a type mismatch for string');
+			assertInMessage(validation[0].message, 'string', 'Error should be a type mismatch for string');
 		});
 
 		test('$ref to a relative id in draft-04', async function () {
@@ -3766,7 +3788,7 @@ suite('JSON Schema', () => {
 			const { textDoc, jsonDoc } = toDocument('42');
 			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
 			assert.strictEqual(validation.length, 1, 'draft-04: $ref should resolve relative id');
-			assert.ok(validation[0].message.includes('string'), 'Error should be a type mismatch for string');
+			assertInMessage(validation[0].message, 'string', 'Error should be a type mismatch for string');
 		});
 
 		test('multiple levels of nested $id', async function () {
@@ -3805,7 +3827,7 @@ suite('JSON Schema', () => {
 			const { textDoc, jsonDoc } = toDocument('42');
 			const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
 			assert.strictEqual(validation.length, 1, 'Nested $id levels should chain correctly');
-			assert.ok(validation[0].message.includes('boolean'), 'Error should be a type mismatch for boolean');
+			assertInMessage(validation[0].message, 'boolean', 'Error should be a type mismatch for boolean');
 		});
 	});
 
@@ -3893,7 +3915,7 @@ suite('JSON Schema', () => {
 			{
 				const { textDoc, jsonDoc } = toDocument('{ "subject": 42 }');
 				const validation = await ls.doValidation(textDoc, jsonDoc, {}, schema);
-				assert.ok(validation.some(v => v.message.includes('string')), 'Expected type mismatch error for non-string value');
+						assert.ok(validation.some(v => messageContains(v.message, 'string')), 'Expected type mismatch error for non-string value');
 			}
 		});
 
@@ -3960,7 +3982,7 @@ suite('JSON Schema', () => {
 			const validation = await ls.doValidation(textDoc, jsonDoc);
 
 			assert.ok(!allFetches.some(u => u.includes('example.com/embedded')), 'Embedded schema should not be fetched externally');
-			const embeddedErrors = validation.filter(v => v.message.includes('example.com/embedded'));
+			const embeddedErrors = validation.filter(v => messageContains(v.message, 'example.com/embedded'));
 			assert.strictEqual(embeddedErrors.length, 0, 'Should have no errors related to the embedded schema');
 		});
 
@@ -3997,7 +4019,7 @@ suite('JSON Schema', () => {
 			const validation = await ls.doValidation(textDoc, jsonDoc);
 
 			assert.ok(!allFetches.some(u => u.includes('example.com/embedded')), 'Embedded schema should not be fetched externally');
-			assert.ok(validation.some(v => v.message.includes('string')), 'Expected type mismatch error for non-string value');
+			assert.ok(validation.some(v => messageContains(v.message, 'string')), 'Expected type mismatch error for non-string value');
 		});
 
 		test('$ref to absolute $id in $defs with relative $schema from file URI resolves locally', async function () {
@@ -4035,7 +4057,7 @@ suite('JSON Schema', () => {
 			const embeddedFetches = allFetches.filter(u => u.includes('example.com/embedded'));
 			assert.strictEqual(embeddedFetches.length, 0, `Embedded schema should not be fetched externally, but was fetched: ${embeddedFetches.join(', ')}`);
 
-			const embeddedErrors = validation.filter(v => v.message.includes('example.com/embedded'));
+			const embeddedErrors = validation.filter(v => messageContains(v.message, 'example.com/embedded'));
 			assert.strictEqual(embeddedErrors.length, 0, `Should have no errors for embedded schema, but got: ${embeddedErrors.map(v => v.message).join('; ')}`);
 		});
 
@@ -4075,10 +4097,10 @@ suite('JSON Schema', () => {
 			const embeddedFetches = allFetches.filter(u => u.includes('example.com/embedded'));
 			assert.strictEqual(embeddedFetches.length, 0, `Embedded schema should not be fetched externally, but was fetched: ${embeddedFetches.join(', ')}`);
 
-			const embeddedErrors = validation.filter(v => v.message.includes('example.com/embedded'));
+			const embeddedErrors = validation.filter(v => messageContains(v.message, 'example.com/embedded'));
 			assert.strictEqual(embeddedErrors.length, 0, `Should have no errors for embedded schema, but got: ${embeddedErrors.map(v => v.message).join('; ')}`);
 
-			assert.strictEqual(validation.filter(v => v.message.includes('Incorrect type')).length, 0, '"foo" is a valid string');
+			assert.strictEqual(validation.filter(v => messageContains(v.message, 'Incorrect type')).length, 0, '"foo" is a valid string');
 		});
 
 		test('$ref to absolute $id in $defs resolves locally after configure() call', async function () {
@@ -4119,7 +4141,7 @@ suite('JSON Schema', () => {
 			const embeddedFetches = allFetches.filter(u => u.includes('example.com/embedded'));
 			assert.strictEqual(embeddedFetches.length, 0, `Embedded schema should not be fetched externally, but was fetched: ${embeddedFetches.join(', ')}`);
 
-			const embeddedErrors = validation.filter(v => v.message.includes('example.com/embedded'));
+			const embeddedErrors = validation.filter(v => messageContains(v.message, 'example.com/embedded'));
 			assert.strictEqual(embeddedErrors.length, 0, `Should have no errors for embedded schema, but got: ${embeddedErrors.map(v => v.message).join('; ')}`);
 		});
 
@@ -4172,7 +4194,7 @@ suite('JSON Schema', () => {
 			const embeddedFetches = allFetches.filter(u => u.includes('example.com/embedded'));
 			assert.strictEqual(embeddedFetches.length, 0, `Embedded schema should not be fetched after reconfigure, but was fetched: ${embeddedFetches.join(', ')}`);
 
-			const embeddedErrors = validation.filter(v => v.message.includes('example.com/embedded'));
+			const embeddedErrors = validation.filter(v => messageContains(v.message, 'example.com/embedded'));
 			assert.strictEqual(embeddedErrors.length, 0, `Should have no errors for embedded schema after reconfigure, but got: ${embeddedErrors.map(v => v.message).join('; ')}`);
 		});
 	});
